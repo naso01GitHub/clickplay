@@ -1,0 +1,11 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+*.suo
+.DS_Store
+conversations/
+.cursor/hooks/state/
+**/appsettings.local.json
+**/smtp.settings.json

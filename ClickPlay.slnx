@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/ClickPlay.App/ClickPlay.App.csproj" />
+  <Project Path="src/ClickPlay.Core/ClickPlay.Core.csproj" />
+</Solution>
