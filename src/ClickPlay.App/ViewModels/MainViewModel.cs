@@ -77,6 +77,16 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     private string _mailTo = string.Empty;
 
+    /// <summary>
+    /// When true, Playwright starts Chromium with Headless = true. When false, Headless = false (visible browser).
+    /// </summary>
+    [ObservableProperty]
+    private bool _headless = true;
+
+    public IReadOnlyList<bool> HeadlessOptions { get; } = [true, false];
+
+    public BrowserLaunchOptions BrowserLaunchOptions => new(Headless);
+
     public bool IsCityVisible => SelectedSport is not null;
 
     public bool IsLocationsVisible => SelectedSport is not null && SelectedCity is not null;
@@ -198,6 +208,7 @@ public partial class MainViewModel : ViewModelBase
 
         Results.Add($"Sport: {SelectedSport.Name}");
         Results.Add($"City: {SelectedCity.Name}");
+        Results.Add($"Headless: {Headless}");
         Results.Add($"Days ahead: {daysAhead}");
         Results.Add($"Weekdays: {weekday.From:HH:mm}–{weekday.To:HH:mm}");
         Results.Add($"Weekends and holidays: {weekend.From:HH:mm}–{weekend.To:HH:mm}");

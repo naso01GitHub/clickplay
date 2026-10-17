@@ -57,6 +57,21 @@ Sequence when those controls are present: **Български** → **Запа�
 - Do not assume every sports-panel failure is caused by these dialogs.
 - Do not repeatedly click buttons without verifying the result (one attempt per visible button, then re-check visibility).
 
+## Component testing requirements
+
+- Add or update tests when changing ViewModels, validators, holiday/date logic, catalog interfaces, or mail formatting.
+- Use a cross-platform test stack (`xUnit` + `net10.0`). Do not add MSTest Windows-only runners or WinAppDriver.
+- Component tests must not open [clicktoplay.io](https://clicktoplay.io/) and must not send real email. Mock `IClickToPlayCatalog` and SMTP.
+- Do not put credentials, tokens, or machine-specific paths in test fixtures.
+- Cover at least:
+  - Days-ahead parsing (valid integer vs empty/zero/non-numeric)
+  - Time-window parsing (`from` before `to`; weekday vs weekend/holiday selection)
+  - UI cascade: sport selected → cities load; city selected → locations load; Search disabled until at least one location is selected
+  - Multi-select locations (select all / clear)
+  - Overlay recovery helper: click **Запази** / **Приемам** only when the locator is visible; skip when hidden
+- Prefer testing ViewModels and Core types over clicking Avalonia controls. If a view test is required, use Avalonia headless, not a live desktop session.
+- Tests must pass on Windows and Mac with `dotnet test`.
+
 ## Product behavior agents must preserve
 
 - Sport dropdown from the site navigation.
