@@ -36,8 +36,14 @@
                     <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding SmtpPassword}" PasswordChar="•" />
                     <TextBlock Grid.Row="4" Grid.Column="0" Text="From" VerticalAlignment="Center" />
                     <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding MailFrom}" />
-                    <TextBlock Grid.Row="5" Grid.Column="0" Text="To" VerticalAlignment="Center" />
-                    <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding MailTo}" />
+                    <TextBlock Grid.Row="5" Grid.Column="0" Text="To" VerticalAlignment="Top" Margin="0,6,0,0" />
+                    <TextBox Grid.Row="5"
+                             Grid.Column="1"
+                             Text="{Binding MailTo}"
+                             AcceptsReturn="True"
+                             MinHeight="72"
+                             TextWrapping="Wrap"
+                             PlaceholderText="one address per line" />
                 </Grid>
             </Expander>
             <StackPanel Orientation="Horizontal" Spacing="8">

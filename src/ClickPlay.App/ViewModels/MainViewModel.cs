@@ -14,11 +14,6 @@ public partial class MainViewModel : ViewModelBase
     private bool _suppressCityReload;
     private bool _suppressVenueReload;
 
-    public MainViewModel()
-        : this(new PlaceholderClickToPlayCatalog())
-    {
-    }
-
     public MainViewModel(IClickToPlayCatalog catalog)
     {
         _catalog = catalog;
@@ -74,16 +69,24 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     private string _mailFrom = string.Empty;
 
+    /// <summary>
+    /// Recipient addresses, one per line (commas or semicolons also accepted).
+    /// </summary>
     [ObservableProperty]
     private string _mailTo = string.Empty;
+
+    /// <summary>
+    /// Parsed To recipients in order, one address per entry.
+    /// </summary>
+    public IReadOnlyList<string> MailRecipients => EmailRecipientParser.Parse(MailTo);
 
     /// <summary>
     /// When true, Playwright starts Chromium with Headless = true. When false, Headless = false (visible browser).
     /// </summary>
     [ObservableProperty]
-    private bool _headless = true;
+    private bool _headless;
 
-    public IReadOnlyList<bool> HeadlessOptions { get; } = [true, false];
+    public IReadOnlyList<bool> HeadlessOptions { get; } = [false, true];
 
     public BrowserLaunchOptions BrowserLaunchOptions => new(Headless);
 
@@ -124,6 +127,8 @@ public partial class MainViewModel : ViewModelBase
 
     partial void OnIsBusyChanged(bool value) => OnPropertyChanged(nameof(CanSearch));
 
+    partial void OnMailToChanged(string value) => OnPropertyChanged(nameof(MailRecipients));
+
     [RelayCommand]
     private async Task LoadSportsAsync()
     {
@@ -132,6 +137,7 @@ public partial class MainViewModel : ViewModelBase
         StatusMessage = "Loading sports…";
         try
         {
+            await _catalog.StartAsync(BrowserLaunchOptions, cancellationToken).ConfigureAwait(true);
             var sports = await _catalog.GetSportsAsync(cancellationToken).ConfigureAwait(true);
             Sports.Clear();
             foreach (var sport in sports)
@@ -209,6 +215,11 @@ public partial class MainViewModel : ViewModelBase
         Results.Add($"Sport: {SelectedSport.Name}");
         Results.Add($"City: {SelectedCity.Name}");
         Results.Add($"Headless: {Headless}");
+        Results.Add("To:");
+        foreach (var recipient in MailRecipients)
+        {
+            Results.Add($"  • {recipient}");
+        }
         Results.Add($"Days ahead: {daysAhead}");
         Results.Add($"Weekdays: {weekday.From:HH:mm}–{weekday.To:HH:mm}");
         Results.Add($"Weekends and holidays: {weekend.From:HH:mm}–{weekend.To:HH:mm}");
@@ -235,7 +246,8 @@ public partial class MainViewModel : ViewModelBase
         StatusMessage = "Loading cities…";
         try
         {
-            var cities = await _catalog.GetCitiesAsync(SelectedSport, cancellationToken).ConfigureAwait(true);
+            var sport = SelectedSport;
+            var cities = await _catalog.GetCitiesAsync(sport, cancellationToken).ConfigureAwait(true);
             foreach (var city in cities)
             {
                 Cities.Add(city);
@@ -362,7 +374,6 @@ public partial class MainViewModel : ViewModelBase
         var previous = _loadCts;
         _loadCts = new CancellationTokenSource();
         previous?.Cancel();
-        previous?.Dispose();
         return _loadCts.Token;
     }
 }

@@ -32,6 +32,13 @@ public sealed class PlaceholderClickToPlayCatalog : IClickToPlayCatalog
         new("Bankya")
     ];
 
+    public Task StartAsync(BrowserLaunchOptions options, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.CompletedTask;
+    }
+
     public Task<IReadOnlyList<Sport>> GetSportsAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();

@@ -3,20 +3,17 @@
   "hooks": {
     "beforeSubmitPrompt": [
       {
-        "command": "node .cursor/hooks/save-conversation.js",
-        "matcher": "UserPromptSubmit"
+        "command": "node .cursor/hooks/save-conversation.js"
       }
     ],
     "afterAgentResponse": [
       {
-        "command": "node .cursor/hooks/save-conversation.js",
-        "matcher": "AgentResponse"
+        "command": "node .cursor/hooks/save-conversation.js"
       }
     ],
     "stop": [
       {
-        "command": "node .cursor/hooks/save-conversation.js",
-        "matcher": "Stop"
+        "command": "node .cursor/hooks/save-conversation.js"
       }
     ]
   }

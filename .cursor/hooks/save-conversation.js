@@ -11,12 +11,25 @@
 const fs = require("fs");
 const path = require("path");
 
+function stripBom(text) {
+  return String(text || "")
+    .replace(/^\uFEFF/, "")
+    .replace(/^\u00EF\u00BB\u00BF/, "")
+    .trim();
+}
+
+function parseJson(text) {
+  const cleaned = stripBom(text);
+  if (!cleaned) return {};
+  return JSON.parse(cleaned);
+}
+
 function readStdin() {
   return new Promise((resolve, reject) => {
     const chunks = [];
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (c) => chunks.push(c));
-    process.stdin.on("end", () => resolve(chunks.join("")));
+    process.stdin.on("end", () => resolve(stripBom(chunks.join(""))));
     process.stdin.on("error", reject);
   });
 }
@@ -94,7 +107,7 @@ function transcriptToText(transcriptPath) {
   for (const line of lines) {
     let row;
     try {
-      row = JSON.parse(line);
+      row = parseJson(line);
     } catch {
       continue;
     }
@@ -148,24 +161,52 @@ function ensureHeader(filePath, conversationId) {
   fs.writeFileSync(filePath, header, "utf8");
 }
 
+function resolveEvent(payload) {
+  const named = String(payload.hook_event_name || payload.event || "").trim();
+  if (named) return named;
+  if (typeof payload.prompt === "string") return "beforeSubmitPrompt";
+  if (typeof payload.transcript_path === "string") return "stop";
+  if (typeof payload.text === "string") return "afterAgentResponse";
+  return "";
+}
+
+function writeDebug(root, line) {
+  try {
+    const dir = conversationsDir(root);
+    fs.appendFileSync(
+      path.join(dir, "hook-debug.log"),
+      `${stamp()} ${line}\n`,
+      "utf8"
+    );
+  } catch {
+    // ignore debug failures
+  }
+}
+
 async function main() {
   const raw = await readStdin();
   let payload = {};
   try {
-    payload = raw.trim() ? JSON.parse(raw) : {};
+    payload = parseJson(raw);
   } catch (err) {
+    const preview = JSON.stringify(raw.slice(0, 40));
+    writeDebug(process.cwd(), `invalid JSON: ${err.message} preview=${preview}`);
     process.stderr.write(`[save-conversation] invalid JSON: ${err.message}\n`);
     process.stdout.write("{}\n");
     return;
   }
 
-  const event = payload.hook_event_name || "";
+  const event = resolveEvent(payload);
   const root = projectRoot(payload);
   const conversationId = payload.conversation_id || payload.session_id || "unknown";
   const file = logPath(root, conversationId);
+  writeDebug(
+    root,
+    `event=${event || "(empty)"} keys=${Object.keys(payload).join(",") || "(none)"} id=${conversationId}`
+  );
 
   try {
-    if (event === "beforeSubmitPrompt") {
+    if (event === "beforeSubmitPrompt" || event === "UserPromptSubmit") {
       ensureHeader(file, conversationId);
       appendBlock(file, "USER", payload.prompt || "");
       fs.copyFileSync(file, latestPath(root));
@@ -173,7 +214,7 @@ async function main() {
       return;
     }
 
-    if (event === "afterAgentResponse") {
+    if (event === "afterAgentResponse" || event === "AgentResponse") {
       ensureHeader(file, conversationId);
       appendBlock(file, "ASSISTANT", payload.text || "");
       fs.copyFileSync(file, latestPath(root));
@@ -181,7 +222,7 @@ async function main() {
       return;
     }
 
-    if (event === "stop") {
+    if (event === "stop" || event === "Stop" || event === "sessionEnd") {
       const fromTranscript = transcriptToText(payload.transcript_path);
       if (fromTranscript) {
         writeOutputs(root, conversationId, fromTranscript);
@@ -192,12 +233,11 @@ async function main() {
       return;
     }
 
-    // Unknown event: no-op
     process.stdout.write("{}\n");
   } catch (err) {
+    writeDebug(root, `error ${err.stack || err.message}`);
     process.stderr.write(`[save-conversation] ${err.stack || err.message}\n`);
-    // Fail open so chat is never blocked by logging.
-    if (event === "beforeSubmitPrompt") {
+    if (event === "beforeSubmitPrompt" || event === "UserPromptSubmit") {
       process.stdout.write(JSON.stringify({ continue: true }) + "\n");
     } else {
       process.stdout.write("{}\n");
