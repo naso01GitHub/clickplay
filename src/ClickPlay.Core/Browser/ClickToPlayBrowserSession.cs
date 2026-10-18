@@ -180,30 +180,61 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
 
             await OpenCityFilterAsync(page).ConfigureAwait(false);
 
-            var applied = await page.EvaluateAsync<bool>(
+            var cityId = await page.EvaluateAsync<string?>(
                 """
                 (name) => {
-                  const nodes = [...document.querySelectorAll('.city')];
-                  const target = nodes.find(n => {
-                    const t = (n.innerText || '').trim().split(',')[0].trim();
-                    return t.localeCompare(name, undefined, { sensitivity: 'accent' }) === 0;
-                  });
-                  if (!target) return false;
-                  target.click();
-                  return true;
+                  const norm = (s) => (s || '').trim().split(',')[0].trim();
+                  const target = [...document.querySelectorAll('.city[data-city]')].find(n =>
+                    norm(n.textContent).localeCompare(name, undefined, { sensitivity: 'accent' }) === 0);
+                  return target ? (target.getAttribute('data-city') || '') : '';
                 }
                 """,
                 city.Name).ConfigureAwait(false);
 
-            if (!applied)
+            if (string.IsNullOrWhiteSpace(cityId))
             {
                 throw new InvalidOperationException($"The site layout changed: city '{city.Name}' was not found.");
             }
 
-            await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded).ConfigureAwait(false);
+            var filtered = page.WaitForResponseAsync(
+                response => response.Url.Contains("/clubs", StringComparison.OrdinalIgnoreCase),
+                new PageWaitForResponseOptions { Timeout = 30_000 });
+
+            await page.EvaluateAsync(
+                """
+                (id) => {
+                  const hidden = document.querySelector('#search_city');
+                  if (hidden) hidden.value = id;
+                  const form = document.getElementById('search_form');
+                  if (form) form.submit();
+                }
+                """,
+                cityId).ConfigureAwait(false);
+
+            try
+            {
+                await filtered.ConfigureAwait(false);
+            }
+            catch (PlaywrightException)
+            {
+                await page.WaitForTimeoutAsync(2_000).ConfigureAwait(false);
+            }
+
+            await page.Locator("a.club-card h3.club-name").First.WaitForAsync(new LocatorWaitForOptions
+            {
+                State = WaitForSelectorState.Attached,
+                Timeout = 15_000
+            }).ConfigureAwait(false);
+
             await ScrollToLoadAllAsync(page).ConfigureAwait(false);
 
             var venues = await ReadVenuesAsync(page).ConfigureAwait(false);
+            if (venues.Count == 0)
+            {
+                await CaptureDiagnosticsAsync("No club cards after city filter.").ConfigureAwait(false);
+                throw new InvalidOperationException("The site layout changed: no locations were found for this city.");
+            }
+
             return venues;
         }
         finally
@@ -448,16 +479,12 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         var rows = await page.EvaluateAsync<ScrapedVenue[]>(
             """
             () => {
-              const skipTitle = /found|намерени|home|начало|filter|филт|click, play/i;
               const seen = new Set();
               const results = [];
-              const candidates = [...document.querySelectorAll('h2, h3, h4, .club-name, [class*="club-title"], [class*="ClubName"]')];
-              for (const el of candidates) {
-                const name = (el.innerText || '').trim().split('\n')[0].trim();
-                if (!name || name.length > 80 || seen.has(name) || skipTitle.test(name)) continue;
-                const parent = el.closest('article, a, li, [class*="card"], [class*="club"]') || el.parentElement;
-                const lines = parent ? (parent.innerText || '').split('\n').map(s => s.trim()).filter(Boolean) : [];
-                const address = lines.find(s => s !== name && s.length > 8 && /софия|варна|пловдив|sofia|varna|plovdiv|ул\\.|бул|гр\\./i.test(s)) || '';
+              for (const card of document.querySelectorAll('a.club-card')) {
+                const name = (card.querySelector('h3.club-name')?.textContent || '').trim().split('\n')[0].trim();
+                const address = (card.querySelector('.club-address')?.textContent || '').trim();
+                if (!name || name.length > 120 || seen.has(name)) continue;
                 seen.add(name);
                 results.push({ name, address });
               }
