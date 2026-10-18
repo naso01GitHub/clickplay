@@ -33,8 +33,32 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     private City? _selectedCity;
 
+    /// <summary>
+    /// Search start date. Defaults to today.
+    /// </summary>
+    [ObservableProperty]
+    private DateTime? _selectedDate = DateTime.Today;
+
+    public DateTime CalendarDisplayDate => (SelectedDate ?? DateTime.Today).Date;
+
+    partial void OnSelectedDateChanged(DateTime? value) =>
+        OnPropertyChanged(nameof(CalendarDisplayDate));
+
     [ObservableProperty]
     private string _daysAheadText = "7";
+
+    /// <summary>
+    /// Minutes to wait after closing the browser before the next search cycle. Digits only, 1–60.
+    /// </summary>
+    [ObservableProperty]
+    private string _repeatText = "1";
+
+    /// <summary>
+    /// Tests can shorten the wait between cycles.
+    /// </summary>
+    public TimeSpan? SearchLoopDelayOverride { get; set; }
+
+    private bool _suppressRepeatSanitize;
 
     [ObservableProperty]
     private string _weekdayFromText = "18:00";
@@ -53,6 +77,9 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     private bool _isBusy;
+
+    [ObservableProperty]
+    private bool _isSearching;
 
     [ObservableProperty]
     private string _smtpHost = string.Empty;
@@ -100,6 +127,8 @@ public partial class MainViewModel : ViewModelBase
         && SelectedCity is not null
         && Locations.Any(l => l.IsSelected);
 
+    public bool CanStop => IsSearching;
+
     partial void OnSelectedSportChanged(Sport? value)
     {
         OnPropertyChanged(nameof(IsCityVisible));
@@ -125,7 +154,36 @@ public partial class MainViewModel : ViewModelBase
         _ = LoadVenuesAsync();
     }
 
-    partial void OnIsBusyChanged(bool value) => OnPropertyChanged(nameof(CanSearch));
+    partial void OnIsBusyChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanSearch));
+        OnPropertyChanged(nameof(CanStop));
+    }
+
+    partial void OnIsSearchingChanged(bool value) => OnPropertyChanged(nameof(CanStop));
+
+    partial void OnRepeatTextChanged(string value)
+    {
+        if (_suppressRepeatSanitize)
+        {
+            return;
+        }
+
+        var digits = new string((value ?? string.Empty).Where(char.IsDigit).ToArray());
+        if (digits.Length > 0 && int.TryParse(digits, out var n) && n > 60)
+        {
+            digits = "60";
+        }
+
+        if (digits == value)
+        {
+            return;
+        }
+
+        _suppressRepeatSanitize = true;
+        RepeatText = digits;
+        _suppressRepeatSanitize = false;
+    }
 
     partial void OnMailToChanged(string value) => OnPropertyChanged(nameof(MailRecipients));
 
@@ -190,12 +248,24 @@ public partial class MainViewModel : ViewModelBase
     }
 
     [RelayCommand]
-    private void Search()
+    private void Stop()
     {
-        Results.Clear();
+        _loadCts?.Cancel();
+        StatusMessage = "Stopping search…";
+    }
+
+    [RelayCommand]
+    private async Task Search()
+    {
         if (!SearchInputValidator.TryParseDaysAhead(DaysAheadText, out var daysAhead, out var daysError))
         {
             StatusMessage = daysError;
+            return;
+        }
+
+        if (!SearchInputValidator.TryParseRepeat(RepeatText, out var repeatMinutes, out var repeatError))
+        {
+            StatusMessage = repeatError;
             return;
         }
 
@@ -205,32 +275,67 @@ public partial class MainViewModel : ViewModelBase
             return;
         }
 
-        var selected = Locations.Where(l => l.IsSelected).ToList();
+        var selected = Locations.Where(l => l.IsSelected).Select(l => l.Venue).ToList();
         if (SelectedSport is null || SelectedCity is null || selected.Count == 0)
         {
             StatusMessage = "Select a sport, a city, and at least one location.";
             return;
         }
 
-        Results.Add($"Sport: {SelectedSport.Name}");
-        Results.Add($"City: {SelectedCity.Name}");
-        Results.Add($"Headless: {Headless}");
-        Results.Add("To:");
-        foreach (var recipient in MailRecipients)
-        {
-            Results.Add($"  • {recipient}");
-        }
-        Results.Add($"Days ahead: {daysAhead}");
-        Results.Add($"Weekdays: {weekday.From:HH:mm}–{weekday.To:HH:mm}");
-        Results.Add($"Weekends and holidays: {weekend.From:HH:mm}–{weekend.To:HH:mm}");
-        Results.Add("Locations:");
-        foreach (var location in selected)
-        {
-            Results.Add($"  • {location.DisplayName}");
-        }
+        var sport = SelectedSport;
+        var city = SelectedCity;
+        var start = DateOnly.FromDateTime((SelectedDate ?? DateTime.Today).Date);
+        var request = new SearchRequest(sport, city, selected, start, daysAhead, weekday, weekend);
+        var wait = SearchLoopDelayOverride ?? TimeSpan.FromMinutes(repeatMinutes);
+        var cancellationToken = ResetLoadToken();
+        var progress = new Progress<string>(msg => StatusMessage = msg);
 
-        StatusMessage = "Search criteria ready. Availability scraping and email will run when Playwright is connected.";
-        OnPropertyChanged(nameof(CanSearch));
+        IsSearching = true;
+        IsBusy = true;
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                StatusMessage = "Opening clicktoplay.io…";
+                await _catalog.StartAsync(BrowserLaunchOptions, cancellationToken).ConfigureAwait(true);
+                var slots = await _catalog.SearchAvailabilityAsync(request, progress, cancellationToken)
+                    .ConfigureAwait(true);
+
+                Results.Clear();
+                if (slots.Count == 0)
+                {
+                    Results.Add("No free hours found.");
+                }
+                else
+                {
+                    foreach (var slot in slots)
+                    {
+                        Results.Add(slot.ToLogLine());
+                    }
+                }
+
+                StatusMessage = $"Found {slots.Count} free hour(s). Closing browser…";
+                await _catalog.CloseBrowserAsync(cancellationToken).ConfigureAwait(true);
+
+                StatusMessage = $"Waiting {repeatMinutes} minute(s) before the next search…";
+                await Task.Delay(wait, cancellationToken).ConfigureAwait(true);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Search stopped.";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Search failed: {ex.Message}";
+        }
+        finally
+        {
+            IsSearching = false;
+            IsBusy = false;
+            OnPropertyChanged(nameof(CanSearch));
+            OnPropertyChanged(nameof(CanStop));
+        }
     }
 
     private async Task LoadCitiesAsync()

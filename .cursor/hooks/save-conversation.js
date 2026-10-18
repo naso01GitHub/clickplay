@@ -27,9 +27,18 @@ function parseJson(text) {
 function readStdin() {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (c) => chunks.push(c));
-    process.stdin.on("end", () => resolve(stripBom(chunks.join(""))));
+    process.stdin.on("data", (c) => chunks.push(Buffer.from(c)));
+    process.stdin.on("end", () => {
+      let buf = Buffer.concat(chunks);
+      if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
+        buf = buf.subarray(3);
+      }
+      let text = buf.toString("utf8");
+      if (text.charCodeAt(0) === 0xfeff) {
+        text = text.slice(1);
+      }
+      resolve(stripBom(text));
+    });
     process.stdin.on("error", reject);
   });
 }
@@ -92,6 +101,38 @@ function stripUserQueryWrapper(text) {
   return String(text)
     .replace(/<timestamp>[\s\S]*?<\/timestamp>\s*/gi, "")
     .trim();
+}
+
+function findTranscript(payload, conversationId) {
+  const direct = payload.transcript_path;
+  if (direct && fs.existsSync(direct)) {
+    return direct;
+  }
+
+  const home = process.env.USERPROFILE || process.env.HOME || "";
+  if (!home || !conversationId || conversationId === "unknown") {
+    return null;
+  }
+
+  const projects = path.join(home, ".cursor", "projects");
+  if (!fs.existsSync(projects)) {
+    return null;
+  }
+
+  for (const name of fs.readdirSync(projects)) {
+    const candidate = path.join(
+      projects,
+      name,
+      "agent-transcripts",
+      conversationId,
+      `${conversationId}.jsonl`
+    );
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 function transcriptToText(transcriptPath) {
@@ -209,21 +250,28 @@ async function main() {
     if (event === "beforeSubmitPrompt" || event === "UserPromptSubmit") {
       ensureHeader(file, conversationId);
       appendBlock(file, "USER", payload.prompt || "");
-      fs.copyFileSync(file, latestPath(root));
+      const rebuilt = transcriptToText(findTranscript(payload, conversationId));
+      if (rebuilt) {
+        writeOutputs(root, conversationId, rebuilt);
+      } else {
+        fs.copyFileSync(file, latestPath(root));
+      }
       process.stdout.write(JSON.stringify({ continue: true }) + "\n");
       return;
     }
 
     if (event === "afterAgentResponse" || event === "AgentResponse") {
       ensureHeader(file, conversationId);
-      appendBlock(file, "ASSISTANT", payload.text || "");
+      const assistantText =
+        payload.text || payload.response || extractText(payload.content || "");
+      appendBlock(file, "ASSISTANT", assistantText);
       fs.copyFileSync(file, latestPath(root));
       process.stdout.write("{}\n");
       return;
     }
 
     if (event === "stop" || event === "Stop" || event === "sessionEnd") {
-      const fromTranscript = transcriptToText(payload.transcript_path);
+      const fromTranscript = transcriptToText(findTranscript(payload, conversationId));
       if (fromTranscript) {
         writeOutputs(root, conversationId, fromTranscript);
       } else if (fs.existsSync(file)) {

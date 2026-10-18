@@ -67,4 +67,21 @@ public sealed class PlaceholderClickToPlayCatalog : IClickToPlayCatalog
 
         return Task.FromResult(venues);
     }
+
+    public Task<IReadOnlyList<AvailabilitySlot>> SearchAvailabilityAsync(
+        SearchRequest request,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+        progress?.Report("Placeholder catalog has no live availability.");
+        return Task.FromResult<IReadOnlyList<AvailabilitySlot>>([]);
+    }
+
+    public Task CloseBrowserAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.CompletedTask;
+    }
 }

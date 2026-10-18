@@ -14,4 +14,11 @@ public interface IClickToPlaySession : IAsyncDisposable
     Task<IReadOnlyList<City>> SelectSportAsync(Sport sport, CancellationToken cancellationToken);
 
     Task<IReadOnlyList<Venue>> SelectCityAsync(City city, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<AvailabilitySlot>> SearchAvailabilityAsync(
+        SearchRequest request,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken);
+
+    Task CloseBrowserAsync(CancellationToken cancellationToken);
 }

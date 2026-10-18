@@ -3,17 +3,26 @@
   "hooks": {
     "beforeSubmitPrompt": [
       {
-        "command": "node .cursor/hooks/save-conversation.js"
+        "command": "cmd /c .cursor\\hooks\\save-conversation.cmd",
+        "timeout": 15
       }
     ],
     "afterAgentResponse": [
       {
-        "command": "node .cursor/hooks/save-conversation.js"
+        "command": "cmd /c .cursor\\hooks\\save-conversation.cmd",
+        "timeout": 15
       }
     ],
     "stop": [
       {
-        "command": "node .cursor/hooks/save-conversation.js"
+        "command": "cmd /c .cursor\\hooks\\save-conversation.cmd",
+        "timeout": 20
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "cmd /c .cursor\\hooks\\save-conversation.cmd",
+        "timeout": 20
       }
     ]
   }

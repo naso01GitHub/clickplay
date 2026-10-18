@@ -14,4 +14,11 @@ public interface IClickToPlayCatalog
     Task<IReadOnlyList<City>> GetCitiesAsync(Sport sport, CancellationToken cancellationToken);
 
     Task<IReadOnlyList<Venue>> GetVenuesAsync(Sport sport, City city, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<AvailabilitySlot>> SearchAvailabilityAsync(
+        SearchRequest request,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken);
+
+    Task CloseBrowserAsync(CancellationToken cancellationToken);
 }

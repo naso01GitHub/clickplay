@@ -1,3 +1,4 @@
+using ClickPlay.Core.Calendar;
 using ClickPlay.Core.Models;
 using ClickPlay.Core.Services;
 using Microsoft.Playwright;
@@ -236,6 +237,85 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             }
 
             return venues;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<AvailabilitySlot>> SearchAvailabilityAsync(
+        SearchRequest request,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var page = RequirePage();
+            if (!page.Url.Contains("/clubs", StringComparison.OrdinalIgnoreCase))
+            {
+                _gate.Release();
+                try
+                {
+                    await SelectSportAsync(request.Sport, cancellationToken).ConfigureAwait(false);
+                    await SelectCityAsync(request.City, cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                page = RequirePage();
+            }
+
+            var slots = new List<AvailabilitySlot>();
+            foreach (var day in SearchDatePlanner.Days(request.StartDate, request.DaysAhead))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var window = SearchDatePlanner.WindowFor(day, request.WeekdayWindow, request.WeekendWindow);
+                progress?.Report($"Selecting {day:yyyy-MM-dd} on the site calendar…");
+                await SelectDayOnCalendarAsync(page, day, cancellationToken).ConfigureAwait(false);
+
+                progress?.Report($"Selecting hour for {day:yyyy-MM-dd}…");
+                var hourReady = await TrySelectHourFromTimeButtonAsync(page, window, cancellationToken)
+                    .ConfigureAwait(false);
+                if (!hourReady)
+                {
+                    progress?.Report($"Clock has no usable hour (only 0.00 / Изчисти or none in window); next day.");
+                    continue;
+                }
+
+                foreach (var venue in request.Locations)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    progress?.Report($"Checking {venue.Name}, {day:yyyy-MM-dd}…");
+                    await PauseBeforeInspectClickAsync(cancellationToken).ConfigureAwait(false);
+                    var found = await CollectVenueSlotsAsync(page, venue, day, window).ConfigureAwait(false);
+                    slots.AddRange(found);
+                }
+            }
+
+            return slots;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task CloseBrowserAsync(CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await DisposeBrowserCoreAsync().ConfigureAwait(false);
+            _playwright?.Dispose();
+            _playwright = null;
         }
         finally
         {
@@ -517,6 +597,361 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             $"url={_page.Url}{Environment.NewLine}title={title}{Environment.NewLine}reason={reason}{Environment.NewLine}").ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Pause before each inspect click so the listing and hour dropdown can settle.
+    /// </summary>
+    private static async Task PauseBeforeInspectClickAsync(CancellationToken cancellationToken)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Moves the pointer onto a calendar control, waits one second, then clicks with the real mouse.
+    /// </summary>
+    private static async Task HoverWaitClickAsync(
+        IPage page,
+        ILocator target,
+        CancellationToken cancellationToken)
+    {
+        await target.ScrollIntoViewIfNeededAsync().ConfigureAwait(false);
+        await target.HoverAsync(new LocatorHoverOptions { Timeout = 10_000 }).ConfigureAwait(false);
+        await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+        var box = await target.BoundingBoxAsync().ConfigureAwait(false);
+        if (box is { Width: > 0, Height: > 0 })
+        {
+            await page.Mouse.ClickAsync(box.X + (box.Width / 2), box.Y + (box.Height / 2)).ConfigureAwait(false);
+            return;
+        }
+
+        await target.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Opens the site datepicker, hovers the desired day box, waits 1s, then clicks so jQuery selects it.
+    /// </summary>
+    private static async Task SelectDayOnCalendarAsync(
+        IPage page,
+        DateOnly day,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var opener = page.Locator(".date-filter-container.desktop-only #show_datepicker, #show_datepicker")
+            .First;
+        if (!await opener.IsVisibleAsync().ConfigureAwait(false))
+        {
+            opener = page.Locator(".date-filter-container.desktop-only .single-date-filter-container").First;
+        }
+
+        if (await opener.IsVisibleAsync().ConfigureAwait(false))
+        {
+            await PauseBeforeInspectClickAsync(cancellationToken).ConfigureAwait(false);
+            await HoverWaitClickAsync(page, opener, cancellationToken).ConfigureAwait(false);
+
+            var picker = page.Locator("#ui-datepicker-div");
+            try
+            {
+                await picker.WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Visible,
+                    Timeout = 8_000
+                }).ConfigureAwait(false);
+
+                var month = day.Month - 1;
+                var dayBox = picker.Locator(
+                    $"td[data-handler='selectDay'][data-month='{month}'][data-year='{day.Year}']");
+                for (var step = 0; step < 16 && !await dayBox.First.IsVisibleAsync().ConfigureAwait(false); step++)
+                {
+                    var next = picker.Locator(".ui-datepicker-next");
+                    if (!await next.IsVisibleAsync().ConfigureAwait(false))
+                    {
+                        break;
+                    }
+
+                    await HoverWaitClickAsync(page, next, cancellationToken).ConfigureAwait(false);
+                }
+
+                if (await dayBox.First.IsVisibleAsync().ConfigureAwait(false))
+                {
+                    await HoverWaitClickAsync(page, dayBox.First, cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        await picker.WaitForAsync(new LocatorWaitForOptions
+                        {
+                            State = WaitForSelectorState.Hidden,
+                            Timeout = 5_000
+                        }).ConfigureAwait(false);
+                    }
+                    catch (PlaywrightException)
+                    {
+                    }
+                }
+            }
+            catch (PlaywrightException)
+            {
+            }
+        }
+
+        var expected = day.ToString("yyyy-MM-dd");
+        var applied = await page.EvaluateAsync<string>(
+            """
+            (args) => {
+              const read = () => {
+                const el = document.getElementById('date')
+                  || document.getElementById('setsearchdate')
+                  || document.getElementById('sdate');
+                return el ? (el.value || '') : '';
+              };
+              if (read() === args.iso) return read();
+              const input = document.getElementById('date') || document.querySelector('.setsearchdate');
+              if (input && window.jQuery && window.jQuery.fn && window.jQuery.fn.datepicker) {
+                window.jQuery(input).datepicker('setDate', new Date(args.y, args.m - 1, args.d));
+                window.jQuery(input).trigger('change');
+              }
+              const setsearch = document.getElementById('setsearchdate');
+              if (setsearch) setsearch.value = args.iso;
+              return read();
+            }
+            """,
+            new { iso = expected, y = day.Year, m = day.Month, d = day.Day }).ConfigureAwait(false);
+
+        if (!string.Equals(applied, expected, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"The site calendar did not select {expected} (value is '{applied}').");
+        }
+
+        try
+        {
+            await page.Locator("a.club-card").First.WaitForAsync(new LocatorWaitForOptions
+            {
+                State = WaitForSelectorState.Attached,
+                Timeout = 10_000
+            }).ConfigureAwait(false);
+        }
+        catch (PlaywrightException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Opens <c>div.secondary-filter-button.time.toclear_filters</c> and clicks the earliest hour in the GUI window.
+    /// </summary>
+    /// <returns>False when that dropdown has no hour inside the window.</returns>
+    private static async Task<bool> TrySelectHourFromTimeButtonAsync(
+        IPage page,
+        TimeWindow window,
+        CancellationToken cancellationToken)
+    {
+        var timeButton = page.Locator("div.secondary-filter-button.time.toclear_filters").First;
+        if (!await timeButton.IsVisibleAsync().ConfigureAwait(false))
+        {
+            timeButton = page.Locator("div.secondary-filter-button.time").First;
+        }
+
+        if (!await timeButton.IsVisibleAsync().ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        await PauseBeforeInspectClickAsync(cancellationToken).ConfigureAwait(false);
+        await timeButton.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
+
+        var optionRoot = page.Locator("div.dropdown-options.time.toclear_filters, #hours_to_move");
+        try
+        {
+            await optionRoot.Locator(".hour-option").First.WaitForAsync(new LocatorWaitForOptions
+            {
+                State = WaitForSelectorState.Visible,
+                Timeout = 8_000
+            }).ConfigureAwait(false);
+        }
+        catch (PlaywrightException)
+        {
+            return false;
+        }
+
+        var rawHours = await page.EvaluateAsync<string[]>(
+            """
+            () => {
+              const roots = document.querySelectorAll('div.dropdown-options.time.toclear_filters, #hours_to_move, #hours_move_mobile');
+              const source = roots.length > 0 ? roots : [document];
+              const Options = [];
+              for (const root of source) {
+                for (const el of root.querySelectorAll('.hour-option, .option-drop, a, button, div')) {
+                  const text = (el.getAttribute('data') || el.textContent || '').replace(/\s+/g, ' ').trim();
+                  if (text) Options.push(text);
+                }
+              }
+              return Options;
+            }
+            """).ConfigureAwait(false);
+
+        var parsed = BookingSlotParser.ParseSelectableHours(rawHours ?? []);
+        if (parsed.Count == 0)
+        {
+            return false;
+        }
+
+        var chosen = BookingSlotParser.EarliestHourInWindow(window, parsed);
+        if (chosen is null)
+        {
+            return false;
+        }
+
+        var label = chosen.Value.ToString("HH:mm");
+        var option = optionRoot.Locator(".hour-option").Filter(new LocatorFilterOptions { HasText = label }).First;
+        if (!await option.IsVisibleAsync().ConfigureAwait(false))
+        {
+            option = page.Locator(".hour-option").Filter(new LocatorFilterOptions { HasText = label }).First;
+        }
+
+        if (!await option.IsVisibleAsync().ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        await PauseBeforeInspectClickAsync(cancellationToken).ConfigureAwait(false);
+        await option.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
+        return true;
+    }
+
+    private static async Task<IReadOnlyList<AvailabilitySlot>> CollectVenueSlotsAsync(
+        IPage page,
+        Venue venue,
+        DateOnly day,
+        TimeWindow window)
+    {
+        var opened = await page.EvaluateAsync<bool>(
+            """
+            (name) => {
+              const cards = [...document.querySelectorAll('a.club-card')];
+              const card = cards.find(c => {
+                const n = (c.querySelector('h3.club-name')?.textContent || '').trim();
+                return n.localeCompare(name, undefined, { sensitivity: 'accent' }) === 0;
+              });
+              if (!card) return false;
+              card.click();
+              return true;
+            }
+            """,
+            venue.Name).ConfigureAwait(false);
+
+        if (!opened)
+        {
+            return [];
+        }
+
+        try
+        {
+            await page.WaitForURLAsync("**/club/**", new PageWaitForURLOptions { Timeout = 20_000 })
+                .ConfigureAwait(false);
+        }
+        catch (PlaywrightException)
+        {
+            if (!page.Url.Contains("/club", StringComparison.OrdinalIgnoreCase))
+            {
+                return [];
+            }
+        }
+
+        try
+        {
+            await page.Locator(".big-widget.booking.active .sport-facility .facility.active").First
+                .WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Attached,
+                    Timeout = 15_000
+                }).ConfigureAwait(false);
+        }
+        catch (PlaywrightException)
+        {
+            throw new InvalidOperationException(
+                "The site layout changed: big-widget booking active / sport-facility / facility.active was not found.");
+        }
+
+        var rows = await page.EvaluateAsync<ScrapedSlot[]>(
+            """
+            () => {
+              const widget = document.querySelector('#CLUBPROFILE .big-widget.booking.active, .big-widget.booking.active');
+              if (!widget) return [];
+              const results = [];
+              const facilities = [...widget.querySelectorAll('.sport-facility .facility.active')];
+              for (const facility of facilities) {
+                const slots = [...facility.querySelectorAll('.booking-slot.itsfree.pr.showtd')];
+                if (slots.length === 0) continue;
+                const court = (facility.querySelector('h3.facility-name, .facility-name')?.textContent || '')
+                  .replace(/\s+/g, ' ').trim();
+                const extras = (facility.querySelector('.facility-extras')?.textContent || '')
+                  .replace(/\s+/g, ' ').trim();
+                const seen = new Set();
+                for (const el of slots) {
+                  const fromTo = (el.getAttribute('data-from-to') || '').trim();
+                  if (!fromTo || seen.has(fromTo)) continue;
+                  seen.add(fromTo);
+                  results.push({
+                    court,
+                    extras,
+                    fromTo,
+                    price: (el.getAttribute('data-price') || '').trim(),
+                    currency: (el.getAttribute('data-currency') || '').trim()
+                  });
+                }
+              }
+              return results;
+            }
+            """).ConfigureAwait(false);
+
+        var list = new List<AvailabilitySlot>();
+        foreach (var row in rows ?? [])
+        {
+            if (row is null)
+            {
+                continue;
+            }
+
+            var slot = BookingSlotParser.TryCreateSlot(
+                venue.Name,
+                day,
+                window,
+                row.Court,
+                row.Extras,
+                row.FromTo,
+                row.Price,
+                row.Currency);
+            if (slot is not null)
+            {
+                list.Add(slot);
+            }
+        }
+
+        try
+        {
+            await page.GoBackAsync(new PageGoBackOptions { WaitUntil = WaitUntilState.DOMContentLoaded })
+                .ConfigureAwait(false);
+        }
+        catch (PlaywrightException)
+        {
+            await page.GotoAsync("https://clicktoplay.io/clubs/index.php", new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.DOMContentLoaded
+            }).ConfigureAwait(false);
+        }
+
+        try
+        {
+            await page.Locator("a.club-card").First.WaitForAsync(new LocatorWaitForOptions
+            {
+                State = WaitForSelectorState.Attached,
+                Timeout = 10_000
+            }).ConfigureAwait(false);
+        }
+        catch (PlaywrightException)
+        {
+        }
+
+        return list;
+    }
+
     private async Task DisposeBrowserCoreAsync()
     {
         if (_page is not null)
@@ -548,5 +983,23 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
 
         [System.Text.Json.Serialization.JsonPropertyName("address")]
         public string Address { get; set; } = string.Empty;
+    }
+
+    private sealed class ScrapedSlot
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("court")]
+        public string Court { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("extras")]
+        public string Extras { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("fromTo")]
+        public string FromTo { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("price")]
+        public string Price { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("currency")]
+        public string Currency { get; set; } = string.Empty;
     }
 }

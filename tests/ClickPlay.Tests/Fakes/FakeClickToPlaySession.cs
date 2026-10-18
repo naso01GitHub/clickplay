@@ -48,5 +48,35 @@ public sealed class FakeClickToPlaySession : IClickToPlaySession
         return Task.FromResult(Venues);
     }
 
+    public SearchRequest? LastSearchRequest { get; private set; }
+
+    public int SearchCallCount { get; private set; }
+
+    public int CloseBrowserCount { get; private set; }
+
+    public IReadOnlyList<AvailabilitySlot> Availability { get; init; } =
+    [
+        new("Amik Sport", new DateOnly(2026, 10, 19), new TimeOnly(18, 0), new TimeOnly(19, 0))
+    ];
+
+    public Task<IReadOnlyList<AvailabilitySlot>> SearchAvailabilityAsync(
+        SearchRequest request,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        LastSearchRequest = request;
+        SearchCallCount++;
+        cancellationToken.ThrowIfCancellationRequested();
+        progress?.Report("Checking locations…");
+        return Task.FromResult(Availability);
+    }
+
+    public Task CloseBrowserAsync(CancellationToken cancellationToken)
+    {
+        CloseBrowserCount++;
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.CompletedTask;
+    }
+
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

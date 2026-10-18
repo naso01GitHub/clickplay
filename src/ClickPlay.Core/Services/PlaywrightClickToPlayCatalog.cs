@@ -35,4 +35,17 @@ public sealed class PlaywrightClickToPlayCatalog : IClickToPlayCatalog
         ArgumentNullException.ThrowIfNull(sport);
         return _session.SelectCityAsync(city, cancellationToken);
     }
+
+    public Task<IReadOnlyList<AvailabilitySlot>> SearchAvailabilityAsync(
+        SearchRequest request,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        return _session.SearchAvailabilityAsync(request, progress, cancellationToken);
+    }
+
+    public Task CloseBrowserAsync(CancellationToken cancellationToken)
+    {
+        return _session.CloseBrowserAsync(cancellationToken);
+    }
 }

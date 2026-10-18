@@ -53,6 +53,9 @@
                 <Button Content="Search"
                         Command="{Binding SearchCommand}"
                         IsEnabled="{Binding CanSearch}" />
+                <Button Content="Stop"
+                        Command="{Binding StopCommand}"
+                        IsEnabled="{Binding CanStop}" />
                 <TextBlock Text="Headless" VerticalAlignment="Center" Margin="12,0,0,0" />
                 <ComboBox Width="88"
                           ItemsSource="{Binding HeadlessOptions}"
@@ -88,11 +91,27 @@
                         </ComboBox.ItemTemplate>
                     </ComboBox>
                 </StackPanel>
+
+                <TextBlock Text="Start date" FontWeight="SemiBold" />
+                <Calendar SelectedDate="{Binding SelectedDate}"
+                          DisplayDate="{Binding CalendarDisplayDate, Mode=OneWay}"
+                          SelectionMode="SingleDate"
+                          HorizontalAlignment="Left" />
             </StackPanel>
 
             <StackPanel Grid.Column="1" Grid.Row="0" Spacing="8">
-                <TextBlock Text="Days ahead" FontWeight="SemiBold" />
-                <TextBox Text="{Binding DaysAheadText}" PlaceholderText="7" />
+                <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
+                    <StackPanel Grid.Column="0" Spacing="8">
+                        <TextBlock Text="Days ahead" FontWeight="SemiBold" />
+                        <TextBox Text="{Binding DaysAheadText}" PlaceholderText="7" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Spacing="8">
+                        <TextBlock Text="Repeat (minutes)" FontWeight="SemiBold" />
+                        <TextBox Text="{Binding RepeatText}"
+                                 PlaceholderText="1–60"
+                                 MaxLength="2" />
+                    </StackPanel>
+                </Grid>
 
                 <TextBlock Text="Weekdays (Mon–Fri)" FontWeight="SemiBold" Margin="0,8,0,0" />
                 <Grid ColumnDefinitions="*,Auto,*" ColumnSpacing="8">

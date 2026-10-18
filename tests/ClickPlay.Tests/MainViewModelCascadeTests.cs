@@ -73,6 +73,29 @@ public sealed class MainViewModelCascadeTests
         Assert.True(vm.CanSearch);
     }
 
+    [Fact]
+    public void RepeatText_KeepsDigitsAndCapsAtSixty()
+    {
+        var session = new FakeClickToPlaySession();
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session));
+
+        vm.RepeatText = "12a";
+        Assert.Equal("12", vm.RepeatText);
+
+        vm.RepeatText = "61";
+        Assert.Equal("60", vm.RepeatText);
+    }
+
+    [Fact]
+    public void SelectedDate_DefaultsToToday()
+    {
+        var session = new FakeClickToPlaySession();
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session));
+
+        Assert.Equal(DateTime.Today, vm.SelectedDate?.Date);
+        Assert.Equal(DateTime.Today, vm.CalendarDisplayDate.Date);
+    }
+
     private static async Task WaitUntil(Func<bool> condition)
     {
         for (var i = 0; i < 50; i++)
