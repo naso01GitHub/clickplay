@@ -56,7 +56,63 @@ public sealed class AvailabilityLoopTests
             new TimeOnly(19, 0),
             "Корт 1",
             "data-id=12 | indoor");
-        Assert.Equal("Amik Sport | Корт 1 | 2026-10-19 18:00–19:00 | data-id=12 | indoor", slot.ToLogLine());
+        Assert.Equal("Amik Sport | Корт 1 | 19.10.2026 18:00–19:00 | data-id=12 | indoor", slot.ToLogLine());
+    }
+
+    [Fact]
+    public void FacilitySchedule_CollectsItsfreeFromTo_SkipsClosed_FiltersWindow()
+    {
+        var day = new DateOnly(2026, 10, 19);
+        var window = new TimeWindow(new TimeOnly(10, 0), new TimeOnly(15, 0));
+        string[] padel1 =
+        [
+            "09:00 - 10:00",
+            "10:00 - 11:00",
+            "11:00 - 12:00",
+            "13:00 - 14:00",
+            "14:00 - 15:00"
+        ];
+
+        var kept = padel1
+            .Select(fromTo => BookingSlotParser.TryCreateSlot(
+                "BETVAM Padel Club",
+                day,
+                window,
+                "Падел 1",
+                "Изкуствена трева | Двоен",
+                fromTo,
+                "36.00",
+                "€",
+                "19.10.2026"))
+            .Where(s => s is not null)
+            .Select(s => s!.ToLogLine())
+            .ToList();
+
+        Assert.Equal(4, kept.Count);
+        Assert.All(kept, line => Assert.Contains("BETVAM Padel Club", line, StringComparison.Ordinal));
+        Assert.Contains(kept, line => line.Contains("10:00–11:00", StringComparison.Ordinal));
+        Assert.Contains(kept, line => line.Contains("14:00–15:00", StringComparison.Ordinal));
+        Assert.Contains(kept, line => line.Contains("19.10.2026", StringComparison.Ordinal));
+        Assert.DoesNotContain(kept, line => line.Contains("09:00–10:00", StringComparison.Ordinal));
+        Assert.Null(BookingSlotParser.TryCreateSlot(
+            "BETVAM Padel Club",
+            day,
+            window,
+            "Падел 1",
+            null,
+            "10:00 - 11:00",
+            "36.00",
+            "€",
+            "18.10.2026"));
+        Assert.Null(BookingSlotParser.TryCreateSlot(
+            "BETVAM Padel Club",
+            day,
+            window,
+            "Падел 1",
+            null,
+            null,
+            null,
+            null));
     }
 
     [Fact]
@@ -71,11 +127,12 @@ public sealed class AvailabilityLoopTests
             "Изкуствена трева | Двоен | Стандартен | Осветено | Закрито съоръжение",
             "23:00 - 00:00",
             "36.00",
-            "€");
+            "€",
+            "18.10.2026");
 
         Assert.NotNull(slot);
         Assert.Equal(
-            "BETVAM Padel Club | Падел 1 | 2026-10-18 23:00–00:00 | 36.00 € | Изкуствена трева | Двоен | Стандартен | Осветено | Закрито съоръжение",
+            "BETVAM Padel Club | Падел 1 | 18.10.2026 23:00–00:00 | 36.00 € | Изкуствена трева | Двоен | Стандартен | Осветено | Закрито съоръжение",
             slot!.ToLogLine());
     }
 
@@ -93,6 +150,18 @@ public sealed class AvailabilityLoopTests
         Assert.Equal(new TimeOnly(18, 0), BookingSlotParser.EarliestHourInWindow(window, hours));
         Assert.Null(BookingSlotParser.EarliestHourInWindow(window, [new TimeOnly(23, 0)]));
         Assert.Null(BookingSlotParser.EarliestHourInWindow(window, []));
+    }
+
+    [Fact]
+    public void Listing_After17_UsesTomorrowAt10()
+    {
+        var after = new DateTime(2026, 10, 18, 17, 1, 0);
+        var before = new DateTime(2026, 10, 18, 17, 0, 0);
+        Assert.True(ListingTimePlanner.ShouldUseTomorrowMorning(after));
+        Assert.False(ListingTimePlanner.ShouldUseTomorrowMorning(before));
+        Assert.Equal(new DateOnly(2026, 10, 19), ListingTimePlanner.ListingDate(after));
+        Assert.Equal(new DateOnly(2026, 10, 18), ListingTimePlanner.ListingDate(before));
+        Assert.Equal(new TimeOnly(10, 0), ListingTimePlanner.MorningHour);
     }
 
     [Fact]

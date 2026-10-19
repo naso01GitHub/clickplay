@@ -227,6 +227,26 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                 Timeout = 15_000
             }).ConfigureAwait(false);
 
+            var now = DateTime.Now;
+            if (ListingTimePlanner.ShouldUseTomorrowMorning(now))
+            {
+                var tomorrow = ListingTimePlanner.ListingDate(now);
+                await SelectDayOnCalendarAsync(page, tomorrow, cancellationToken).ConfigureAwait(false);
+                await TrySelectExactHourAsync(page, ListingTimePlanner.MorningHour, cancellationToken)
+                    .ConfigureAwait(false);
+                try
+                {
+                    await page.Locator("a.club-card h3.club-name").First.WaitForAsync(new LocatorWaitForOptions
+                    {
+                        State = WaitForSelectorState.Attached,
+                        Timeout = 15_000
+                    }).ConfigureAwait(false);
+                }
+                catch (PlaywrightException)
+                {
+                }
+            }
+
             await ScrollToLoadAllAsync(page).ConfigureAwait(false);
 
             var venues = await ReadVenuesAsync(page).ConfigureAwait(false);
@@ -815,6 +835,18 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         return true;
     }
 
+    /// <summary>
+    /// Opens the clock dropdown and clicks a specific hour (ignores 0.00 / Изчисти).
+    /// </summary>
+    private static async Task<bool> TrySelectExactHourAsync(
+        IPage page,
+        TimeOnly hour,
+        CancellationToken cancellationToken)
+    {
+        var window = new TimeWindow(hour, hour);
+        return await TrySelectHourFromTimeButtonAsync(page, window, cancellationToken).ConfigureAwait(false);
+    }
+
     private static async Task<IReadOnlyList<AvailabilitySlot>> CollectVenueSlotsAsync(
         IPage page,
         Venue venue,
@@ -856,7 +888,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
 
         try
         {
-            await page.Locator(".big-widget.booking.active .sport-facility .facility.active").First
+            await page.Locator(".sport-facility .facility.active .facility-schedule .booking-slot").First
                 .WaitForAsync(new LocatorWaitForOptions
                 {
                     State = WaitForSelectorState.Attached,
@@ -866,23 +898,26 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         catch (PlaywrightException)
         {
             throw new InvalidOperationException(
-                "The site layout changed: big-widget booking active / sport-facility / facility.active was not found.");
+                "The site layout changed: facility-schedule booking slots were not found.");
         }
 
         var rows = await page.EvaluateAsync<ScrapedSlot[]>(
             """
             () => {
-              const widget = document.querySelector('#CLUBPROFILE .big-widget.booking.active, .big-widget.booking.active');
+              const widget = document.querySelector('#CLUBPROFILE .big-widget.booking.active, .big-widget.booking.active')
+                || document.querySelector('.sport-facility');
               if (!widget) return [];
               const results = [];
-              const facilities = [...widget.querySelectorAll('.sport-facility .facility.active')];
+              const facilities = [...widget.querySelectorAll('.facility.active')];
               for (const facility of facilities) {
-                const slots = [...facility.querySelectorAll('.booking-slot.itsfree.pr.showtd')];
-                if (slots.length === 0) continue;
                 const court = (facility.querySelector('h3.facility-name, .facility-name')?.textContent || '')
                   .replace(/\s+/g, ' ').trim();
                 const extras = (facility.querySelector('.facility-extras')?.textContent || '')
                   .replace(/\s+/g, ' ').trim();
+                const slots = [...facility.querySelectorAll('.booking-slot')].filter(el =>
+                  el.classList.contains('itsfree')
+                  && !el.classList.contains('closed')
+                  && el.hasAttribute('data-from-to'));
                 const seen = new Set();
                 for (const el of slots) {
                   const fromTo = (el.getAttribute('data-from-to') || '').trim();
@@ -892,6 +927,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                     court,
                     extras,
                     fromTo,
+                    dateDf: (el.getAttribute('data-df') || '').trim(),
                     price: (el.getAttribute('data-price') || '').trim(),
                     currency: (el.getAttribute('data-currency') || '').trim()
                   });
@@ -917,7 +953,8 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                 row.Extras,
                 row.FromTo,
                 row.Price,
-                row.Currency);
+                row.Currency,
+                row.DateDf);
             if (slot is not null)
             {
                 list.Add(slot);
@@ -995,6 +1032,9 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
 
         [System.Text.Json.Serialization.JsonPropertyName("fromTo")]
         public string FromTo { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("dateDf")]
+        public string DateDf { get; set; } = string.Empty;
 
         [System.Text.Json.Serialization.JsonPropertyName("price")]
         public string Price { get; set; } = string.Empty;

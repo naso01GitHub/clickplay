@@ -1,3 +1,4 @@
+using System.Globalization;
 using ClickPlay.Core.Calendar;
 using ClickPlay.Core.Models;
 
@@ -40,6 +41,32 @@ public static class BookingSlotParser
     }
 
     /// <summary>
+    /// Parses site <c>data-df</c> values such as <c>19.10.2026</c>.
+    /// </summary>
+    /// <example>
+    /// <code>
+    /// BookingSlotParser.TryParseSiteDate("19.10.2026", out var date);
+    /// </code>
+    /// </example>
+    public static bool TryParseSiteDate(string? dataDf, out DateOnly date)
+    {
+        date = default;
+        if (string.IsNullOrWhiteSpace(dataDf))
+        {
+            return false;
+        }
+
+        var text = dataDf.Trim();
+        string[] formats = ["dd.MM.yyyy", "d.M.yyyy", "dd.MM.yy"];
+        return DateOnly.TryParseExact(
+            text,
+            formats,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
+            out date);
+    }
+
+    /// <summary>
     /// Builds the extra log fragment from court extras and slot price.
     /// </summary>
     /// <example>
@@ -72,7 +99,8 @@ public static class BookingSlotParser
         string? extras,
         string? dataFromTo,
         string? price,
-        string? currency)
+        string? currency,
+        string? dataDf = null)
     {
         if (!TryParseFromTo(dataFromTo, out var from, out var to))
         {
@@ -84,6 +112,17 @@ public static class BookingSlotParser
             return null;
         }
 
+        string? siteDateLabel = null;
+        if (!string.IsNullOrWhiteSpace(dataDf))
+        {
+            if (!TryParseSiteDate(dataDf, out var siteDate) || siteDate != day)
+            {
+                return null;
+            }
+
+            siteDateLabel = dataDf.Trim();
+        }
+
         var details = FormatDetails(extras, price, currency);
         return new AvailabilitySlot(
             locationName,
@@ -91,7 +130,8 @@ public static class BookingSlotParser
             from,
             to,
             string.IsNullOrWhiteSpace(courtName) ? null : courtName.Trim(),
-            string.IsNullOrWhiteSpace(details) ? null : details);
+            string.IsNullOrWhiteSpace(details) ? null : details,
+            siteDateLabel);
     }
 
     /// <summary>
