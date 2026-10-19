@@ -626,16 +626,28 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     }
 
     /// <summary>
-    /// Moves the pointer onto a calendar control, waits one second, then clicks with the real mouse.
+    /// Moves the real mouse onto a control's center.
     /// </summary>
-    private static async Task HoverWaitClickAsync(
-        IPage page,
-        ILocator target,
-        CancellationToken cancellationToken)
+    private static async Task MoveMouseToAsync(IPage page, ILocator target, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         await target.ScrollIntoViewIfNeededAsync().ConfigureAwait(false);
+        var box = await target.BoundingBoxAsync().ConfigureAwait(false);
+        if (box is { Width: > 0, Height: > 0 })
+        {
+            await page.Mouse.MoveAsync(box.X + (box.Width / 2), box.Y + (box.Height / 2)).ConfigureAwait(false);
+            return;
+        }
+
         await target.HoverAsync(new LocatorHoverOptions { Timeout = 10_000 }).ConfigureAwait(false);
-        await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Clicks with the real mouse at the locator center.
+    /// </summary>
+    private static async Task MouseClickCenterAsync(IPage page, ILocator target, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         var box = await target.BoundingBoxAsync().ConfigureAwait(false);
         if (box is { Width: > 0, Height: > 0 })
         {
@@ -644,6 +656,57 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         }
 
         await target.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// True when the day's background or text is pink/red (site hover/selected tint).
+    /// </summary>
+    private static async Task<bool> IsDayPinkRedAsync(ILocator dayBox)
+    {
+        return await dayBox.EvaluateAsync<bool>(
+            """
+            (el) => {
+              const node = el.querySelector('a') || el;
+              const parse = (c) => {
+                const m = String(c || '').match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+                return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : [255, 255, 255];
+              };
+              const s = getComputedStyle(node);
+              const samples = [s.backgroundColor, s.color, getComputedStyle(el).backgroundColor];
+              for (const c of samples) {
+                const [r, g, b] = parse(c);
+                if (r >= 160 && r > g + 25 && r > b + 15) return true;
+              }
+              return false;
+            }
+            """).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Hovers the day cell, clicks as soon as it is pink-red, otherwise clicks after 2s of gray/hover.
+    /// </summary>
+    private static async Task HoverThenClickCalendarDayAsync(
+        IPage page,
+        ILocator dayBox,
+        CancellationToken cancellationToken)
+    {
+        await MoveMouseToAsync(page, dayBox, cancellationToken).ConfigureAwait(false);
+        await dayBox.HoverAsync(new LocatorHoverOptions { Timeout = 10_000 }).ConfigureAwait(false);
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await IsDayPinkRedAsync(dayBox).ConfigureAwait(false))
+            {
+                await MouseClickCenterAsync(page, dayBox, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            await Task.Delay(150, cancellationToken).ConfigureAwait(false);
+        }
+
+        await MouseClickCenterAsync(page, dayBox, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -665,7 +728,8 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         if (await opener.IsVisibleAsync().ConfigureAwait(false))
         {
             await PauseBeforeInspectClickAsync(cancellationToken).ConfigureAwait(false);
-            await HoverWaitClickAsync(page, opener, cancellationToken).ConfigureAwait(false);
+            await MoveMouseToAsync(page, opener, cancellationToken).ConfigureAwait(false);
+            await MouseClickCenterAsync(page, opener, cancellationToken).ConfigureAwait(false);
 
             var picker = page.Locator("#ui-datepicker-div");
             try
@@ -687,12 +751,13 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                         break;
                     }
 
-                    await HoverWaitClickAsync(page, next, cancellationToken).ConfigureAwait(false);
+                    await MoveMouseToAsync(page, next, cancellationToken).ConfigureAwait(false);
+                    await MouseClickCenterAsync(page, next, cancellationToken).ConfigureAwait(false);
                 }
 
                 if (await dayBox.First.IsVisibleAsync().ConfigureAwait(false))
                 {
-                    await HoverWaitClickAsync(page, dayBox.First, cancellationToken).ConfigureAwait(false);
+                    await HoverThenClickCalendarDayAsync(page, dayBox.First, cancellationToken).ConfigureAwait(false);
                     try
                     {
                         await picker.WaitForAsync(new LocatorWaitForOptions
