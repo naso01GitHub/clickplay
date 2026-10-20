@@ -240,11 +240,12 @@ public sealed class AvailabilityLoopTests
         Assert.Contains(vm.Results, line => line.Contains("18:00", StringComparison.Ordinal));
         Assert.True(vm.CanStop);
         Assert.False(vm.CanSearch);
-        Assert.Equal(1, session.CloseBrowserCount);
+        Assert.Equal(4, session.CloseBrowserCount);
 
         vm.StopCommand.Execute(null);
         await search;
 
+        Assert.Equal(5, session.CloseBrowserCount);
         Assert.False(vm.IsBusy);
         Assert.False(vm.IsSearching);
         Assert.False(vm.CanStop);

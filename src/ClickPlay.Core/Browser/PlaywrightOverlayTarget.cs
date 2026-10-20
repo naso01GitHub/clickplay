@@ -55,6 +55,16 @@ public sealed class PlaywrightOverlayTarget : IOverlayTarget
             return;
         }
 
-        await locator.ClickAsync().ConfigureAwait(false);
+        await HumanPointer.ClickAsync(_page, locator, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _page.WaitForLoadStateAsync(
+                    LoadState.DOMContentLoaded,
+                    new PageWaitForLoadStateOptions { Timeout = 15_000 })
+                .ConfigureAwait(false);
+        }
+        catch (PlaywrightException)
+        {
+        }
     }
 }

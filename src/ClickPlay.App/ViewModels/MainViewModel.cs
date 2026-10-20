@@ -221,6 +221,7 @@ public partial class MainViewModel : ViewModelBase
         }
         finally
         {
+            await CloseCatalogQuietlyAsync().ConfigureAwait(true);
             IsBusy = false;
         }
     }
@@ -330,6 +331,7 @@ public partial class MainViewModel : ViewModelBase
         }
         finally
         {
+            await CloseCatalogQuietlyAsync().ConfigureAwait(true);
             IsSearching = false;
             IsBusy = false;
             OnPropertyChanged(nameof(CanSearch));
@@ -347,10 +349,11 @@ public partial class MainViewModel : ViewModelBase
 
         var cancellationToken = ResetLoadToken();
         IsBusy = true;
-        StatusMessage = "Loading cities…";
+        StatusMessage = "Opening clicktoplay.io for cities…";
         try
         {
             var sport = SelectedSport;
+            await _catalog.StartAsync(BrowserLaunchOptions, cancellationToken).ConfigureAwait(true);
             var cities = await _catalog.GetCitiesAsync(sport, cancellationToken).ConfigureAwait(true);
             foreach (var city in cities)
             {
@@ -371,6 +374,7 @@ public partial class MainViewModel : ViewModelBase
         }
         finally
         {
+            await CloseCatalogQuietlyAsync().ConfigureAwait(true);
             IsBusy = false;
         }
     }
@@ -385,9 +389,10 @@ public partial class MainViewModel : ViewModelBase
 
         var cancellationToken = ResetLoadToken();
         IsBusy = true;
-        StatusMessage = "Loading locations…";
+        StatusMessage = "Opening clicktoplay.io for locations…";
         try
         {
+            await _catalog.StartAsync(BrowserLaunchOptions, cancellationToken).ConfigureAwait(true);
             var venues = await _catalog.GetVenuesAsync(SelectedSport, SelectedCity, cancellationToken).ConfigureAwait(true);
             foreach (var venue in venues)
             {
@@ -416,8 +421,20 @@ public partial class MainViewModel : ViewModelBase
         }
         finally
         {
+            await CloseCatalogQuietlyAsync().ConfigureAwait(true);
             IsBusy = false;
             OnPropertyChanged(nameof(CanSearch));
+        }
+    }
+
+    private async Task CloseCatalogQuietlyAsync()
+    {
+        try
+        {
+            await _catalog.CloseBrowserAsync(CancellationToken.None).ConfigureAwait(true);
+        }
+        catch
+        {
         }
     }
 

@@ -41,8 +41,9 @@ public sealed class FakeClickToPlaySession : IClickToPlaySession
         return Task.FromResult(Cities);
     }
 
-    public Task<IReadOnlyList<Venue>> SelectCityAsync(City city, CancellationToken cancellationToken)
+    public Task<IReadOnlyList<Venue>> SelectCityAsync(Sport sport, City city, CancellationToken cancellationToken)
     {
+        LastSport = sport;
         LastCity = city;
         cancellationToken.ThrowIfCancellationRequested();
         return Task.FromResult(Venues);

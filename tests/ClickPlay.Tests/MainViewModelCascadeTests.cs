@@ -17,6 +17,7 @@ public sealed class MainViewModelCascadeTests
         Assert.NotNull(session.LastStartOptions);
         Assert.False(session.LastStartOptions!.Headless);
         Assert.Equal(2, vm.Sports.Count);
+        Assert.Equal(1, session.CloseBrowserCount);
         Assert.False(vm.CanSearch);
     }
 
@@ -32,6 +33,7 @@ public sealed class MainViewModelCascadeTests
 
         Assert.Equal("Падел", session.LastSport?.Name);
         Assert.Equal(2, vm.Cities.Count);
+        Assert.Equal(2, session.CloseBrowserCount);
         Assert.Empty(vm.Locations);
         Assert.False(vm.CanSearch);
     }
@@ -49,7 +51,9 @@ public sealed class MainViewModelCascadeTests
         await WaitUntil(() => vm.Locations.Count > 0);
 
         Assert.Equal("Sofia", session.LastCity?.Name);
+        Assert.Equal("Падел", session.LastSport?.Name);
         Assert.Equal(2, vm.Locations.Count);
+        Assert.Equal(3, session.CloseBrowserCount);
         Assert.False(vm.CanSearch);
 
         vm.Locations[0].IsSelected = true;

@@ -4,7 +4,7 @@ using ClickPlay.Core.Models;
 namespace ClickPlay.Core.Services;
 
 /// <summary>
-/// Catalog backed by a long-lived Playwright session (one page until dispose).
+/// Catalog backed by Playwright. The GUI starts and closes the browser per cascade step.
 /// </summary>
 public sealed class PlaywrightClickToPlayCatalog : IClickToPlayCatalog
 {
@@ -33,7 +33,7 @@ public sealed class PlaywrightClickToPlayCatalog : IClickToPlayCatalog
     public Task<IReadOnlyList<Venue>> GetVenuesAsync(Sport sport, City city, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(sport);
-        return _session.SelectCityAsync(city, cancellationToken);
+        return _session.SelectCityAsync(sport, city, cancellationToken);
     }
 
     public Task<IReadOnlyList<AvailabilitySlot>> SearchAvailabilityAsync(

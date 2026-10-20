@@ -3,7 +3,7 @@ using ClickPlay.Core.Models;
 namespace ClickPlay.Core.Services;
 
 /// <summary>
-/// Long-lived Playwright session against clicktoplay.io. The page stays open until dispose.
+/// Playwright session against clicktoplay.io. The GUI closes the browser after sports, cities, and locations; Search opens it again for each cycle.
 /// </summary>
 public interface IClickToPlaySession : IAsyncDisposable
 {
@@ -13,7 +13,7 @@ public interface IClickToPlaySession : IAsyncDisposable
 
     Task<IReadOnlyList<City>> SelectSportAsync(Sport sport, CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<Venue>> SelectCityAsync(City city, CancellationToken cancellationToken);
+    Task<IReadOnlyList<Venue>> SelectCityAsync(Sport sport, City city, CancellationToken cancellationToken);
 
     Task<IReadOnlyList<AvailabilitySlot>> SearchAvailabilityAsync(
         SearchRequest request,
