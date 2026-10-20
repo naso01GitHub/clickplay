@@ -317,8 +317,7 @@ public partial class MainViewModel : ViewModelBase
                 StatusMessage = $"Found {slots.Count} free hour(s). Closing browser…";
                 await _catalog.CloseBrowserAsync(cancellationToken).ConfigureAwait(true);
 
-                StatusMessage = $"Waiting {repeatMinutes} minute(s) before the next search…";
-                await Task.Delay(wait, cancellationToken).ConfigureAwait(true);
+                await WaitBeforeNextSearchAsync(wait, cancellationToken).ConfigureAwait(true);
             }
         }
         catch (OperationCanceledException)
@@ -327,7 +326,7 @@ public partial class MainViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Search failed: {ex.Message}";
+            StatusMessage = FormatSearchFailure(StatusMessage, ex);
         }
         finally
         {
@@ -472,6 +471,68 @@ public partial class MainViewModel : ViewModelBase
 
         error = string.Empty;
         return true;
+    }
+
+    /// <summary>
+    /// Status while waiting between cycles: minutes while over 1 minute, else seconds.
+    /// </summary>
+    public static string FormatWaitStatus(TimeSpan remaining)
+    {
+        if (remaining <= TimeSpan.Zero)
+        {
+            return "Starting next search…";
+        }
+
+        if (remaining >= TimeSpan.FromMinutes(1))
+        {
+            var minutes = Math.Max(1, (int)Math.Floor(remaining.TotalMinutes));
+            return $"Waiting {minutes} minute(s) before the next search…";
+        }
+
+        var seconds = Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds));
+        return $"Waiting {seconds} second(s) before the next search…";
+    }
+
+    /// <summary>
+    /// Short failure line: last search step plus exception type and message.
+    /// </summary>
+    public static string FormatSearchFailure(string? lastStep, Exception ex)
+    {
+        ArgumentNullException.ThrowIfNull(ex);
+        var step = string.IsNullOrWhiteSpace(lastStep)
+            ? "search"
+            : lastStep.Trim().TrimEnd('.', '…');
+        var detail = $"{ex.GetType().Name}: {ex.Message}";
+        if (ex.InnerException is { } inner && !string.IsNullOrWhiteSpace(inner.Message))
+        {
+            detail += $" ({inner.GetType().Name}: {inner.Message})";
+        }
+
+        if (detail.Length > 180)
+        {
+            detail = detail[..177] + "…";
+        }
+
+        return $"Search failed ({step}): {detail}";
+    }
+
+    private async Task WaitBeforeNextSearchAsync(TimeSpan wait, CancellationToken cancellationToken)
+    {
+        var remaining = wait;
+        while (remaining > TimeSpan.Zero)
+        {
+            StatusMessage = FormatWaitStatus(remaining);
+            var slice = remaining > TimeSpan.FromMinutes(1)
+                ? TimeSpan.FromMinutes(1)
+                : TimeSpan.FromSeconds(1);
+            if (slice > remaining)
+            {
+                slice = remaining;
+            }
+
+            await Task.Delay(slice, cancellationToken).ConfigureAwait(true);
+            remaining -= slice;
+        }
     }
 
     private CancellationToken ResetLoadToken()

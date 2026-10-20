@@ -193,6 +193,31 @@ public sealed class AvailabilityLoopTests
     }
 
     [Fact]
+    public void WaitStatus_UsesMinutesThenSeconds()
+    {
+        Assert.Equal(
+            "Waiting 5 minute(s) before the next search…",
+            MainViewModel.FormatWaitStatus(TimeSpan.FromMinutes(5)));
+        Assert.Equal(
+            "Waiting 1 minute(s) before the next search…",
+            MainViewModel.FormatWaitStatus(TimeSpan.FromMinutes(1)));
+        Assert.Equal(
+            "Waiting 45 second(s) before the next search…",
+            MainViewModel.FormatWaitStatus(TimeSpan.FromSeconds(45)));
+    }
+
+    [Fact]
+    public void SearchFailure_IncludesStepAndExceptionType()
+    {
+        var line = MainViewModel.FormatSearchFailure(
+            "Checking Amik Sport, 2026-10-19…",
+            new InvalidOperationException("clicktoplay.io’s database is full"));
+        Assert.StartsWith("Search failed (Checking Amik Sport, 2026-10-19)", line);
+        Assert.Contains("InvalidOperationException", line, StringComparison.Ordinal);
+        Assert.Contains("database is full", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Search_FillsResultsAndStopCancelsWait()
     {
         var session = new FakeClickToPlaySession();

@@ -221,6 +221,8 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                 await page.WaitForTimeoutAsync(2_000).ConfigureAwait(false);
             }
 
+            await ThrowIfSiteDatabaseBusyAsync(page).ConfigureAwait(false);
+
             await page.Locator("a.club-card h3.club-name").First.WaitForAsync(new LocatorWaitForOptions
             {
                 State = WaitForSelectorState.Attached,
@@ -391,7 +393,23 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     {
         await page.GotoAsync(HomeUrl, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded })
             .ConfigureAwait(false);
+        await ThrowIfSiteDatabaseBusyAsync(page).ConfigureAwait(false);
         await page.WaitForTimeoutAsync(2_000).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// clicktoplay.io PHP uses mysqli; when MySQL hits max_connections the HTML shows HY000/1040.
+    /// </summary>
+    private static async Task ThrowIfSiteDatabaseBusyAsync(IPage page)
+    {
+        var html = await page.ContentAsync().ConfigureAwait(false);
+        if (html.Contains("Too many connections", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("HY000/1040", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("mysqli_connect", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "clicktoplay.io’s database is full (mysqli Too many connections). Stop searching and wait; this is their MySQL limit, not a ClickPlay bug.");
+        }
     }
 
     private async Task RecoverSportsPanelAsync(CancellationToken cancellationToken)
@@ -947,9 +965,12 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         {
             if (!page.Url.Contains("/club", StringComparison.OrdinalIgnoreCase))
             {
+                await ThrowIfSiteDatabaseBusyAsync(page).ConfigureAwait(false);
                 return [];
             }
         }
+
+        await ThrowIfSiteDatabaseBusyAsync(page).ConfigureAwait(false);
 
         try
         {
