@@ -60,6 +60,12 @@ public sealed class FakeClickToPlaySession : IClickToPlaySession
         new("Amik Sport", new DateOnly(2026, 10, 19), new TimeOnly(18, 0), new TimeOnly(19, 0))
     ];
 
+    public Func<int, IReadOnlyList<AvailabilitySlot>>? AvailabilityForCall { get; init; }
+
+    public int ThrowOnSearchCallNumber { get; init; }
+
+    public Exception? SearchException { get; init; }
+
     public Task<IReadOnlyList<AvailabilitySlot>> SearchAvailabilityAsync(
         SearchRequest request,
         IProgress<string>? progress,
@@ -68,8 +74,14 @@ public sealed class FakeClickToPlaySession : IClickToPlaySession
         LastSearchRequest = request;
         SearchCallCount++;
         cancellationToken.ThrowIfCancellationRequested();
+        if (ThrowOnSearchCallNumber == SearchCallCount && SearchException is not null)
+        {
+            throw SearchException;
+        }
+
         progress?.Report("Checking locations…");
-        return Task.FromResult(Availability);
+        var slots = AvailabilityForCall?.Invoke(SearchCallCount) ?? Availability;
+        return Task.FromResult(slots);
     }
 
     public Task CloseBrowserAsync(CancellationToken cancellationToken)

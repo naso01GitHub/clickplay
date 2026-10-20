@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using ClickPlay.Core.Browser;
 using ClickPlay.Core.Models;
 using ClickPlay.Core.Services;
 using ClickPlay.Core.Validation;
@@ -10,6 +11,7 @@ namespace ClickPlay.App.ViewModels;
 public partial class MainViewModel : ViewModelBase
 {
     private readonly IClickToPlayCatalog _catalog;
+    private readonly HashSet<string> _seenResultLines = new(StringComparer.Ordinal);
     private CancellationTokenSource? _loadCts;
     private bool _suppressCityReload;
     private bool _suppressVenueReload;
@@ -17,6 +19,9 @@ public partial class MainViewModel : ViewModelBase
     public MainViewModel(IClickToPlayCatalog catalog)
     {
         _catalog = catalog;
+        Sports.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsSportsVisible));
+        Cities.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsCityVisible));
+        Locations.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsLocationsVisible));
     }
 
     public ObservableCollection<Sport> Sports { get; } = [];
@@ -58,19 +63,74 @@ public partial class MainViewModel : ViewModelBase
     /// </summary>
     public TimeSpan? SearchLoopDelayOverride { get; set; }
 
+    /// <summary>
+    /// Clock for Results scan stamps. Tests can replace it.
+    /// </summary>
+    public Func<DateTime> ScanClock { get; set; } = () => DateTime.Now;
+
+    /// <summary>
+    /// Results log on disk. Defaults to app-data <c>results-log.txt</c>. Tests can replace it.
+    /// </summary>
+    public string ResultsLogPath { get; set; } = AppPaths.ResultsLogFile();
+
     private bool _suppressRepeatSanitize;
 
-    [ObservableProperty]
-    private string _weekdayFromText = "18:00";
+    private decimal _weekdayFromHour = 18;
+    private decimal _weekdayFromMinute;
+    private decimal _weekdayToHour = 21;
+    private decimal _weekdayToMinute;
+    private decimal _weekendFromHour = 10;
+    private decimal _weekendFromMinute;
+    private decimal _weekendToHour = 20;
+    private decimal _weekendToMinute;
 
-    [ObservableProperty]
-    private string _weekdayToText = "21:00";
+    public decimal WeekdayFromHour
+    {
+        get => _weekdayFromHour;
+        set => SetClock(ref _weekdayFromHour, value, 23);
+    }
 
-    [ObservableProperty]
-    private string _weekendFromText = "10:00";
+    public decimal WeekdayFromMinute
+    {
+        get => _weekdayFromMinute;
+        set => SetClock(ref _weekdayFromMinute, value, 59);
+    }
 
-    [ObservableProperty]
-    private string _weekendToText = "20:00";
+    public decimal WeekdayToHour
+    {
+        get => _weekdayToHour;
+        set => SetClock(ref _weekdayToHour, value, 23);
+    }
+
+    public decimal WeekdayToMinute
+    {
+        get => _weekdayToMinute;
+        set => SetClock(ref _weekdayToMinute, value, 59);
+    }
+
+    public decimal WeekendFromHour
+    {
+        get => _weekendFromHour;
+        set => SetClock(ref _weekendFromHour, value, 23);
+    }
+
+    public decimal WeekendFromMinute
+    {
+        get => _weekendFromMinute;
+        set => SetClock(ref _weekendFromMinute, value, 59);
+    }
+
+    public decimal WeekendToHour
+    {
+        get => _weekendToHour;
+        set => SetClock(ref _weekendToHour, value, 23);
+    }
+
+    public decimal WeekendToMinute
+    {
+        get => _weekendToMinute;
+        set => SetClock(ref _weekendToMinute, value, 59);
+    }
 
     [ObservableProperty]
     private string _statusMessage = "Load sports to begin.";
@@ -108,18 +168,20 @@ public partial class MainViewModel : ViewModelBase
     public IReadOnlyList<string> MailRecipients => EmailRecipientParser.Parse(MailTo);
 
     /// <summary>
-    /// When true, Playwright starts Chromium with Headless = true. When false, Headless = false (visible browser).
+    /// When true, Chromium is shown. When false (default), Playwright runs headless.
     /// </summary>
     [ObservableProperty]
-    private bool _headless;
+    private bool _debug;
 
-    public IReadOnlyList<bool> HeadlessOptions { get; } = [false, true];
+    public IReadOnlyList<bool> DebugOptions { get; } = [false, true];
 
-    public BrowserLaunchOptions BrowserLaunchOptions => new(Headless);
+    public BrowserLaunchOptions BrowserLaunchOptions => new(Headless: !Debug);
 
-    public bool IsCityVisible => SelectedSport is not null;
+    public bool IsSportsVisible => Sports.Count > 0;
 
-    public bool IsLocationsVisible => SelectedSport is not null && SelectedCity is not null;
+    public bool IsCityVisible => Cities.Count > 0;
+
+    public bool IsLocationsVisible => Locations.Count > 0;
 
     public bool CanSearch =>
         !IsBusy
@@ -131,8 +193,6 @@ public partial class MainViewModel : ViewModelBase
 
     partial void OnSelectedSportChanged(Sport? value)
     {
-        OnPropertyChanged(nameof(IsCityVisible));
-        OnPropertyChanged(nameof(IsLocationsVisible));
         OnPropertyChanged(nameof(CanSearch));
         if (_suppressCityReload)
         {
@@ -144,7 +204,6 @@ public partial class MainViewModel : ViewModelBase
 
     partial void OnSelectedCityChanged(City? value)
     {
-        OnPropertyChanged(nameof(IsLocationsVisible));
         OnPropertyChanged(nameof(CanSearch));
         if (_suppressVenueReload)
         {
@@ -183,6 +242,15 @@ public partial class MainViewModel : ViewModelBase
         _suppressRepeatSanitize = true;
         RepeatText = digits;
         _suppressRepeatSanitize = false;
+    }
+
+    private void SetClock(ref decimal field, decimal value, int max, [System.Runtime.CompilerServices.CallerMemberName] string? propertyName = null)
+    {
+        var clamped = SearchInputValidator.ClampClockNumber(value, max);
+        if (!SetProperty(ref field, clamped, propertyName) && clamped != value)
+        {
+            OnPropertyChanged(propertyName);
+        }
     }
 
     partial void OnMailToChanged(string value) => OnPropertyChanged(nameof(MailRecipients));
@@ -285,9 +353,6 @@ public partial class MainViewModel : ViewModelBase
 
         var sport = SelectedSport;
         var city = SelectedCity;
-        var start = DateOnly.FromDateTime((SelectedDate ?? DateTime.Today).Date);
-        var request = new SearchRequest(sport, city, selected, start, daysAhead, weekday, weekend);
-        var wait = SearchLoopDelayOverride ?? TimeSpan.FromMinutes(repeatMinutes);
         var cancellationToken = ResetLoadToken();
         var progress = new Progress<string>(msg => StatusMessage = msg);
 
@@ -297,37 +362,58 @@ public partial class MainViewModel : ViewModelBase
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                StatusMessage = "Opening clicktoplay.io…";
-                await _catalog.StartAsync(BrowserLaunchOptions, cancellationToken).ConfigureAwait(true);
-                var slots = await _catalog.SearchAvailabilityAsync(request, progress, cancellationToken)
-                    .ConfigureAwait(true);
-
-                Results.Clear();
-                if (slots.Count == 0)
+                try
                 {
-                    Results.Add("No free hours found.");
-                }
-                else
-                {
-                    foreach (var slot in slots)
+                    var cycleLocations = Locations.Where(l => l.IsSelected).Select(l => l.Venue).ToList();
+                    if (cycleLocations.Count == 0)
                     {
-                        Results.Add(slot.ToLogLine());
+                        StatusMessage = "Select at least one location.";
+                        await WaitBeforeNextSearchAsync(ReadWaitDuration(repeatMinutes), cancellationToken)
+                            .ConfigureAwait(true);
+                        continue;
                     }
+
+                    if (!TryReadSearchCycle(sport, city, cycleLocations, out var request, out var cycleError))
+                    {
+                        StatusMessage = cycleError;
+                        await WaitBeforeNextSearchAsync(ReadWaitDuration(repeatMinutes), cancellationToken)
+                            .ConfigureAwait(true);
+                        continue;
+                    }
+
+                    StatusMessage = "Opening clicktoplay.io…";
+                    await _catalog.StartAsync(BrowserLaunchOptions, cancellationToken).ConfigureAwait(true);
+                    var slots = await _catalog.SearchAvailabilityAsync(request, progress, cancellationToken)
+                        .ConfigureAwait(true);
+
+                    var newCount = PublishNewResults(slots);
+                    StatusMessage = newCount == 0
+                        ? (slots.Count == 0
+                            ? "No free hours found. Closing browser…"
+                            : "No new free hours. Closing browser…")
+                        : $"Found {newCount} new free hour(s). Closing browser…";
+                    await _catalog.CloseBrowserAsync(cancellationToken).ConfigureAwait(true);
+
+                    await WaitBeforeNextSearchAsync(ReadWaitDuration(repeatMinutes), cancellationToken)
+                        .ConfigureAwait(true);
                 }
-
-                StatusMessage = $"Found {slots.Count} free hour(s). Closing browser…";
-                await _catalog.CloseBrowserAsync(cancellationToken).ConfigureAwait(true);
-
-                await WaitBeforeNextSearchAsync(wait, cancellationToken).ConfigureAwait(true);
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    ResetResultsLog();
+                    StatusMessage = FormatSearchFailure(StatusMessage, ex);
+                    await CloseCatalogQuietlyAsync().ConfigureAwait(true);
+                    await WaitBeforeNextSearchAsync(ReadWaitDuration(repeatMinutes), cancellationToken)
+                        .ConfigureAwait(true);
+                }
             }
         }
         catch (OperationCanceledException)
         {
             StatusMessage = "Search stopped.";
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = FormatSearchFailure(StatusMessage, ex);
         }
         finally
         {
@@ -427,6 +513,45 @@ public partial class MainViewModel : ViewModelBase
         }
     }
 
+    private bool TryReadSearchCycle(
+        Sport sport,
+        City city,
+        IReadOnlyList<Venue> selected,
+        out SearchRequest request,
+        out string error)
+    {
+        request = null!;
+        if (!SearchInputValidator.TryParseDaysAhead(DaysAheadText, out var daysAhead, out error))
+        {
+            return false;
+        }
+
+        if (!TryReadWindows(out var weekday, out var weekend, out error))
+        {
+            return false;
+        }
+
+        var start = DateOnly.FromDateTime((SelectedDate ?? DateTime.Today).Date);
+        request = new SearchRequest(sport, city, selected, start, daysAhead, weekday, weekend);
+        error = string.Empty;
+        return true;
+    }
+
+    private TimeSpan ReadWaitDuration(int fallbackMinutes)
+    {
+        if (SearchLoopDelayOverride is { } overrideWait)
+        {
+            return overrideWait;
+        }
+
+        if (SearchInputValidator.TryParseRepeat(RepeatText, out var minutes, out _))
+        {
+            return TimeSpan.FromMinutes(minutes);
+        }
+
+        return TimeSpan.FromMinutes(fallbackMinutes);
+    }
+
     private async Task CloseCatalogQuietlyAsync()
     {
         try
@@ -445,7 +570,6 @@ public partial class MainViewModel : ViewModelBase
         _suppressVenueReload = false;
         Cities.Clear();
         ClearVenues();
-        OnPropertyChanged(nameof(IsLocationsVisible));
         OnPropertyChanged(nameof(CanSearch));
     }
 
@@ -460,12 +584,8 @@ public partial class MainViewModel : ViewModelBase
         weekday = new TimeWindow(default, default);
         weekend = weekday;
 
-        if (!SearchInputValidator.TryParseTime(WeekdayFromText, out var wf, out error)
-            || !SearchInputValidator.TryParseTime(WeekdayToText, out var wt, out error))
-        {
-            return false;
-        }
-
+        var wf = SearchInputValidator.ToClockTime(WeekdayFromHour, WeekdayFromMinute);
+        var wt = SearchInputValidator.ToClockTime(WeekdayToHour, WeekdayToMinute);
         weekday = new TimeWindow(wf, wt);
         if (!weekday.IsValid)
         {
@@ -473,12 +593,8 @@ public partial class MainViewModel : ViewModelBase
             return false;
         }
 
-        if (!SearchInputValidator.TryParseTime(WeekendFromText, out var xf, out error)
-            || !SearchInputValidator.TryParseTime(WeekendToText, out var xt, out error))
-        {
-            return false;
-        }
-
+        var xf = SearchInputValidator.ToClockTime(WeekendFromHour, WeekendFromMinute);
+        var xt = SearchInputValidator.ToClockTime(WeekendToHour, WeekendToMinute);
         weekend = new TimeWindow(xf, xt);
         if (!weekend.IsValid)
         {
@@ -531,6 +647,70 @@ public partial class MainViewModel : ViewModelBase
         }
 
         return $"Search failed ({step}): {detail}";
+    }
+
+    /// <summary>
+    /// Results header for one scan, e.g. <c>20.10.2026 23:06:01</c>.
+    /// </summary>
+    public static string FormatScanStamp(DateTime when) =>
+        when.ToString("dd.MM.yyyy HH:mm:ss");
+
+    private int PublishNewResults(IReadOnlyList<AvailabilitySlot> slots)
+    {
+        var block = new List<string> { FormatScanStamp(ScanClock()) };
+        Results.Add(block[0]);
+        var newCount = 0;
+        foreach (var slot in slots)
+        {
+            var line = slot.ToLogLine();
+            if (_seenResultLines.Add(line))
+            {
+                Results.Add(line);
+                block.Add(line);
+                newCount++;
+            }
+        }
+
+        Results.Add(string.Empty);
+        block.Add(string.Empty);
+        AppendResultsLog(block);
+        return newCount;
+    }
+
+    private void ResetResultsLog()
+    {
+        _seenResultLines.Clear();
+        Results.Clear();
+        try
+        {
+            var dir = Path.GetDirectoryName(ResultsLogPath);
+            if (!string.IsNullOrWhiteSpace(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            File.WriteAllText(ResultsLogPath, string.Empty);
+        }
+        catch
+        {
+        }
+    }
+
+    private void AppendResultsLog(IReadOnlyList<string> lines)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(ResultsLogPath);
+            if (!string.IsNullOrWhiteSpace(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            File.AppendAllLines(ResultsLogPath, lines);
+        }
+        catch
+        {
+        }
     }
 
     private async Task WaitBeforeNextSearchAsync(TimeSpan wait, CancellationToken cancellationToken)

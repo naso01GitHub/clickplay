@@ -67,7 +67,7 @@ public static class BookingSlotParser
     }
 
     /// <summary>
-    /// Builds the extra log fragment from court extras and slot price.
+    /// Builds the extra log fragment from court extras. Price is ignored.
     /// </summary>
     /// <example>
     /// <code>
@@ -76,11 +76,15 @@ public static class BookingSlotParser
     /// </example>
     public static string FormatDetails(string? extras, string? price, string? currency)
     {
-        var paid = string.Join(" ", new[] { price, currency }.Where(s => !string.IsNullOrWhiteSpace(s))).Trim();
-        var bits = new[] { paid, extras?.ReplaceLineEndings(" ").Trim() }
-            .Where(s => !string.IsNullOrWhiteSpace(s))
-            .Select(s => System.Text.RegularExpressions.Regex.Replace(s!, @"\s+", " ").Trim());
-        return string.Join(" | ", bits);
+        _ = price;
+        _ = currency;
+        var extra = extras?.ReplaceLineEndings(" ").Trim();
+        if (string.IsNullOrWhiteSpace(extra))
+        {
+            return string.Empty;
+        }
+
+        return System.Text.RegularExpressions.Regex.Replace(extra, @"\s+", " ").Trim();
     }
 
     /// <summary>

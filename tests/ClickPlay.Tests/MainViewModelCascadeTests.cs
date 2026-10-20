@@ -15,10 +15,29 @@ public sealed class MainViewModelCascadeTests
         await vm.LoadSportsCommand.ExecuteAsync(null);
 
         Assert.NotNull(session.LastStartOptions);
-        Assert.False(session.LastStartOptions!.Headless);
+        Assert.False(vm.Debug);
+        Assert.True(session.LastStartOptions!.Headless);
         Assert.Equal(2, vm.Sports.Count);
+        Assert.True(vm.IsSportsVisible);
+        Assert.False(vm.IsCityVisible);
+        Assert.False(vm.IsLocationsVisible);
         Assert.Equal(1, session.CloseBrowserCount);
         Assert.False(vm.CanSearch);
+    }
+
+    [Fact]
+    public async Task DebugTrue_LaunchesVisibleChromium()
+    {
+        var session = new FakeClickToPlaySession();
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
+        {
+            Debug = true
+        };
+
+        await vm.LoadSportsCommand.ExecuteAsync(null);
+
+        Assert.True(vm.Debug);
+        Assert.False(session.LastStartOptions!.Headless);
     }
 
     [Fact]
@@ -33,8 +52,10 @@ public sealed class MainViewModelCascadeTests
 
         Assert.Equal("Падел", session.LastSport?.Name);
         Assert.Equal(2, vm.Cities.Count);
+        Assert.True(vm.IsCityVisible);
         Assert.Equal(2, session.CloseBrowserCount);
         Assert.Empty(vm.Locations);
+        Assert.False(vm.IsLocationsVisible);
         Assert.False(vm.CanSearch);
     }
 
@@ -53,6 +74,7 @@ public sealed class MainViewModelCascadeTests
         Assert.Equal("Sofia", session.LastCity?.Name);
         Assert.Equal("Падел", session.LastSport?.Name);
         Assert.Equal(2, vm.Locations.Count);
+        Assert.True(vm.IsLocationsVisible);
         Assert.Equal(3, session.CloseBrowserCount);
         Assert.False(vm.CanSearch);
 
@@ -88,6 +110,25 @@ public sealed class MainViewModelCascadeTests
 
         vm.RepeatText = "61";
         Assert.Equal("60", vm.RepeatText);
+    }
+
+    [Fact]
+    public void ClockBoxes_KeepDigitsAndCapHourAndMinute()
+    {
+        var session = new FakeClickToPlaySession();
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session));
+
+        vm.WeekdayFromHour = 24;
+        Assert.Equal(23, vm.WeekdayFromHour);
+
+        vm.WeekdayFromHour = 55;
+        Assert.Equal(23, vm.WeekdayFromHour);
+
+        vm.WeekdayFromMinute = 99;
+        Assert.Equal(59, vm.WeekdayFromMinute);
+
+        vm.WeekdayToHour = -3;
+        Assert.Equal(0, vm.WeekdayToHour);
     }
 
     [Fact]

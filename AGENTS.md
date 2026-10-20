@@ -32,7 +32,7 @@ Target website (clicktoplay.io) rules — terms, locators, overlay recovery, and
 
 - Use **Microsoft.Playwright** only. Do not add Selenium or Windows-only WebView2 into shared code.
 - One browser/context lifecycle per search session; dispose with `await using`.
-- Default **headless**; optional “show browser” for debugging (`Headless` true/false in the UI).
+- Default **headless**; optional **Debug** in the UI (`true` shows Chromium, `false` is headless).
 - Wait for load state / locators (`WaitForSelectorAsync`, `Locator`). No fixed `Thread.Sleep` except a documented last resort.
 - Timeouts: navigation ~30s, element ~10s; cancel via `CancellationToken`.
 - Install Chromium once per machine (Windows PowerShell or Mac `pwsh`):

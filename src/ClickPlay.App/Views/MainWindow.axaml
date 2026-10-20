@@ -8,7 +8,7 @@
         x:DataType="vm:MainViewModel"
         Icon="/Assets/avalonia-logo.ico"
         Title="ClickPlay"
-        Width="980"
+        Width="960"
         Height="720"
         MinWidth="720"
         MinHeight="560">
@@ -41,6 +41,17 @@
         <Style Selector="TextBox.narrow">
             <Setter Property="MaxWidth" Value="72" />
             <Setter Property="MinWidth" Value="64" />
+            <Setter Property="HorizontalAlignment" Value="Left" />
+        </Style>
+        <Style Selector="NumericUpDown.clock">
+            <Setter Property="MinWidth" Value="52" />
+            <Setter Property="MaxWidth" Value="58" />
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="ShowButtonSpinner" Value="False" />
+            <Setter Property="FormatString" Value="00" />
+            <Setter Property="Increment" Value="1" />
+            <Setter Property="ClipValueToMinMax" Value="True" />
             <Setter Property="HorizontalAlignment" Value="Left" />
         </Style>
         <Style Selector="TextBox.short">
@@ -90,109 +101,142 @@
                 <Button Content="Stop"
                         Command="{Binding StopCommand}"
                         IsEnabled="{Binding CanStop}" />
-                <TextBlock Text="Headless" VerticalAlignment="Center" Margin="12,0,0,0" />
+                <TextBlock Text="Debug" VerticalAlignment="Center" Margin="12,0,0,0" />
                 <ComboBox Width="88"
-                          ItemsSource="{Binding HeadlessOptions}"
-                          SelectedItem="{Binding Headless}"
-                          ToolTip.Tip="true = no browser window, false = show Chromium" />
+                          ItemsSource="{Binding DebugOptions}"
+                          SelectedItem="{Binding Debug}"
+                          ToolTip.Tip="true = show Chromium, false = headless" />
             </StackPanel>
         </StackPanel>
 
-        <DockPanel>
-            <DockPanel DockPanel.Dock="Right"
-                       MinWidth="360"
-                       Width="420"
-                       Margin="16,0,0,0">
-                <StackPanel DockPanel.Dock="Top" Spacing="6" HorizontalAlignment="Right">
-                    <Grid ColumnDefinitions="Auto,Auto,Auto"
-                          RowDefinitions="Auto,Auto"
-                          ColumnSpacing="10"
-                          RowSpacing="4"
-                          HorizontalAlignment="Right">
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Start date" FontWeight="SemiBold" FontSize="12" />
-                        <CalendarDatePicker Grid.Row="1"
-                                            Grid.Column="0"
-                                            SelectedDate="{Binding SelectedDate}" />
-                        <TextBlock Grid.Row="0" Grid.Column="1" Text="Days ahead" FontWeight="SemiBold" FontSize="12" />
-                        <TextBox Grid.Row="1"
-                                 Grid.Column="1"
-                                 Classes="short"
-                                 Text="{Binding DaysAheadText}"
-                                 PlaceholderText="7" />
-                        <TextBlock Grid.Row="0" Grid.Column="2" Text="Repeat (min)" FontWeight="SemiBold" FontSize="12" />
-                        <TextBox Grid.Row="1"
-                                 Grid.Column="2"
-                                 Classes="short"
-                                 Text="{Binding RepeatText}"
-                                 PlaceholderText="1–60"
-                                 MaxLength="2" />
-                    </Grid>
-                    <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-                        <TextBlock Text="Weekdays" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
-                        <TextBox Classes="narrow" Text="{Binding WeekdayFromText}" PlaceholderText="18:00" />
-                        <TextBlock Text="to" VerticalAlignment="Center" FontSize="12" />
-                        <TextBox Classes="narrow" Text="{Binding WeekdayToText}" PlaceholderText="21:00" />
+        <Grid ColumnDefinitions="*,380" ColumnSpacing="16">
+            <Grid Grid.Column="0" RowDefinitions="Auto,Auto,*" RowSpacing="8">
+            <StackPanel Grid.Row="0" Spacing="6" HorizontalAlignment="Left">
+                <Grid ColumnDefinitions="Auto,Auto,Auto"
+                      RowDefinitions="Auto,Auto"
+                      ColumnSpacing="10"
+                      RowSpacing="4">
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Start date" FontWeight="SemiBold" FontSize="12" />
+                    <CalendarDatePicker Grid.Row="1"
+                                        Grid.Column="0"
+                                        SelectedDate="{Binding SelectedDate}" />
+                    <TextBlock Grid.Row="0" Grid.Column="1" Text="Days ahead" FontWeight="SemiBold" FontSize="12" />
+                    <TextBox Grid.Row="1"
+                             Grid.Column="1"
+                             Classes="short"
+                             Text="{Binding DaysAheadText}"
+                             PlaceholderText="7" />
+                    <TextBlock Grid.Row="0" Grid.Column="2" Text="Repeat (min)" FontWeight="SemiBold" FontSize="12" />
+                    <TextBox Grid.Row="1"
+                             Grid.Column="2"
+                             Classes="short"
+                             Text="{Binding RepeatText}"
+                             PlaceholderText="1–60"
+                             MaxLength="2" />
+                </Grid>
+                <Grid ColumnDefinitions="150,*"
+                      RowDefinitions="Auto,Auto"
+                      ColumnSpacing="8"
+                      RowSpacing="6">
+                    <TextBlock Grid.Row="0" Grid.Column="0"
+                               Text="Weekdays"
+                               FontWeight="SemiBold"
+                               FontSize="12"
+                               VerticalAlignment="Center" />
+                    <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="4">
+                        <NumericUpDown Classes="clock" Minimum="0" Maximum="23" Value="{Binding WeekdayFromHour}" ToolTip.Tip="Hour 0–23" />
+                        <TextBlock Text=":" VerticalAlignment="Center" FontSize="12" />
+                        <NumericUpDown Classes="clock" Minimum="0" Maximum="59" Value="{Binding WeekdayFromMinute}" ToolTip.Tip="Minutes 0–59" />
+                        <TextBlock Text="to" VerticalAlignment="Center" FontSize="12" Margin="8,0" />
+                        <NumericUpDown Classes="clock" Minimum="0" Maximum="23" Value="{Binding WeekdayToHour}" ToolTip.Tip="Hour 0–23" />
+                        <TextBlock Text=":" VerticalAlignment="Center" FontSize="12" />
+                        <NumericUpDown Classes="clock" Minimum="0" Maximum="59" Value="{Binding WeekdayToMinute}" ToolTip.Tip="Minutes 0–59" />
                     </StackPanel>
-                    <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-                        <TextBlock Text="Weekends / holidays" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
-                        <TextBox Classes="narrow" Text="{Binding WeekendFromText}" PlaceholderText="10:00" />
-                        <TextBlock Text="to" VerticalAlignment="Center" FontSize="12" />
-                        <TextBox Classes="narrow" Text="{Binding WeekendToText}" PlaceholderText="20:00" />
+                    <TextBlock Grid.Row="1" Grid.Column="0"
+                               Text="Weekends / holidays"
+                               FontWeight="SemiBold"
+                               FontSize="12"
+                               VerticalAlignment="Center"
+                               TextWrapping="Wrap" />
+                    <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Spacing="4">
+                        <NumericUpDown Classes="clock" Minimum="0" Maximum="23" Value="{Binding WeekendFromHour}" ToolTip.Tip="Hour 0–23" />
+                        <TextBlock Text=":" VerticalAlignment="Center" FontSize="12" />
+                        <NumericUpDown Classes="clock" Minimum="0" Maximum="59" Value="{Binding WeekendFromMinute}" ToolTip.Tip="Minutes 0–59" />
+                        <TextBlock Text="to" VerticalAlignment="Center" FontSize="12" Margin="8,0" />
+                        <NumericUpDown Classes="clock" Minimum="0" Maximum="23" Value="{Binding WeekendToHour}" ToolTip.Tip="Hour 0–23" />
+                        <TextBlock Text=":" VerticalAlignment="Center" FontSize="12" />
+                        <NumericUpDown Classes="clock" Minimum="0" Maximum="59" Value="{Binding WeekendToMinute}" ToolTip.Tip="Minutes 0–59" />
                     </StackPanel>
-                </StackPanel>
-                <DockPanel Margin="0,8,0,0">
-                    <TextBlock DockPanel.Dock="Top" Text="Results" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,6" />
-                    <ListBox ItemsSource="{Binding Results}" MinHeight="80" />
-                </DockPanel>
-            </DockPanel>
-
-            <StackPanel DockPanel.Dock="Top"
-                        Spacing="6"
-                        HorizontalAlignment="Left"
-                        Margin="0,0,0,8">
-                <TextBlock Text="Sport" FontWeight="SemiBold" FontSize="12" />
-                <ComboBox Classes="compact"
-                          ItemsSource="{Binding Sports}"
-                          SelectedItem="{Binding SelectedSport}"
-                          PlaceholderText="Select a sport">
-                    <ComboBox.ItemTemplate>
-                        <DataTemplate>
-                            <TextBlock Text="{Binding Name}" />
-                        </DataTemplate>
-                    </ComboBox.ItemTemplate>
-                </ComboBox>
-                <TextBlock Text="City"
-                           FontWeight="SemiBold"
-                           FontSize="12"
-                           IsVisible="{Binding IsCityVisible}" />
-                <ComboBox Classes="compact"
-                          IsVisible="{Binding IsCityVisible}"
-                          ItemsSource="{Binding Cities}"
-                          SelectedItem="{Binding SelectedCity}"
-                          PlaceholderText="Select a city">
-                    <ComboBox.ItemTemplate>
-                        <DataTemplate>
-                            <TextBlock Text="{Binding Name}" />
-                        </DataTemplate>
-                    </ComboBox.ItemTemplate>
-                </ComboBox>
+                </Grid>
             </StackPanel>
 
-            <DockPanel IsVisible="{Binding IsLocationsVisible}">
-                <TextBlock DockPanel.Dock="Top" Text="Locations" FontWeight="SemiBold" FontSize="12" />
-                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8" Margin="0,4,0,6">
+            <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="16">
+                <StackPanel Spacing="6" IsVisible="{Binding IsSportsVisible}">
+                    <TextBlock Text="Sport" FontWeight="SemiBold" FontSize="12" />
+                    <ComboBox Classes="compact"
+                              ItemsSource="{Binding Sports}"
+                              SelectedItem="{Binding SelectedSport}"
+                              PlaceholderText="Select a sport">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Name}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                </StackPanel>
+                <StackPanel Spacing="6" IsVisible="{Binding IsCityVisible}">
+                    <TextBlock Text="City" FontWeight="SemiBold" FontSize="12" />
+                    <ComboBox Classes="compact"
+                              ItemsSource="{Binding Cities}"
+                              SelectedItem="{Binding SelectedCity}"
+                              PlaceholderText="Select a city">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Name}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                </StackPanel>
+            </StackPanel>
+
+            <DockPanel Grid.Row="2" IsVisible="{Binding IsLocationsVisible}">
+                <StackPanel DockPanel.Dock="Top"
+                            Orientation="Horizontal"
+                            Spacing="8"
+                            Margin="0,0,0,6">
+                    <TextBlock Text="Locations" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
                     <Button Content="Select all" Command="{Binding SelectAllLocationsCommand}" />
                     <Button Content="Clear" Command="{Binding ClearLocationsCommand}" />
                 </StackPanel>
-                <ListBox ItemsSource="{Binding Locations}" MinHeight="80">
+                <ListBox ItemsSource="{Binding Locations}" MinHeight="80" FontSize="11">
                     <ListBox.ItemTemplate>
                         <DataTemplate x:DataType="vm:LocationItemViewModel">
                             <CheckBox Content="{Binding DisplayName}"
-                                      IsChecked="{Binding IsSelected}" />
+                                      IsChecked="{Binding IsSelected}"
+                                      FontSize="11" />
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
             </DockPanel>
-        </DockPanel>
+            </Grid>
+
+            <DockPanel Grid.Column="1"
+                       VerticalAlignment="Stretch"
+                       MaxWidth="380">
+                <TextBlock DockPanel.Dock="Top" Text="Results" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,6" />
+                <ListBox ItemsSource="{Binding Results}"
+                         MinHeight="80"
+                         FontSize="11"
+                         ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding}"
+                                       FontSize="11"
+                                       TextWrapping="NoWrap" />
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </DockPanel>
+        </Grid>
     </DockPanel>
 </Window>

@@ -131,9 +131,11 @@ public sealed class AvailabilityLoopTests
             "18.10.2026");
 
         Assert.NotNull(slot);
+        Assert.DoesNotContain("36.00", slot!.ToLogLine(), StringComparison.Ordinal);
+        Assert.DoesNotContain("€", slot.ToLogLine(), StringComparison.Ordinal);
         Assert.Equal(
-            "BETVAM Padel Club | Падел 1 | 18.10.2026 23:00–00:00 | 36.00 € | Изкуствена трева | Двоен | Стандартен | Осветено | Закрито съоръжение",
-            slot!.ToLogLine());
+            "BETVAM Padel Club | Падел 1 | 18.10.2026 23:00–00:00 | Изкуствена трева | Двоен | Стандартен | Осветено | Закрито съоръжение",
+            slot.ToLogLine());
     }
 
     [Fact]
@@ -223,7 +225,9 @@ public sealed class AvailabilityLoopTests
         var session = new FakeClickToPlaySession();
         var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
         {
-            SearchLoopDelayOverride = TimeSpan.FromSeconds(30)
+            SearchLoopDelayOverride = TimeSpan.FromSeconds(30),
+            ScanClock = () => new DateTime(2026, 10, 20, 21, 0, 0),
+            ResultsLogPath = TempLogPath()
         };
 
         await vm.LoadSportsCommand.ExecuteAsync(null);
@@ -236,8 +240,11 @@ public sealed class AvailabilityLoopTests
         var search = vm.SearchCommand.ExecuteAsync(null);
         await WaitUntil(() => vm.Results.Count > 0);
 
+        Assert.Equal("20.10.2026 21:00:00", vm.Results[0]);
         Assert.Contains(vm.Results, line => line.Contains("Amik Sport", StringComparison.Ordinal));
         Assert.Contains(vm.Results, line => line.Contains("18:00", StringComparison.Ordinal));
+        Assert.Equal(string.Empty, vm.Results[^1]);
+        Assert.Contains("Amik Sport", File.ReadAllText(vm.ResultsLogPath), StringComparison.Ordinal);
         Assert.True(vm.CanStop);
         Assert.False(vm.CanSearch);
         Assert.Equal(4, session.CloseBrowserCount);
@@ -250,6 +257,165 @@ public sealed class AvailabilityLoopTests
         Assert.False(vm.IsSearching);
         Assert.False(vm.CanStop);
     }
+
+    [Fact]
+    public async Task Search_RereadsDateDaysAndWindowsEachCycle()
+    {
+        var session = new FakeClickToPlaySession();
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
+        {
+            SearchLoopDelayOverride = TimeSpan.FromMilliseconds(80),
+            ResultsLogPath = TempLogPath()
+        };
+
+        await vm.LoadSportsCommand.ExecuteAsync(null);
+        vm.SelectedSport = vm.Sports[0];
+        await WaitUntil(() => vm.Cities.Count > 0);
+        vm.SelectedCity = vm.Cities[0];
+        await WaitUntil(() => vm.Locations.Count > 0);
+        vm.Locations[0].IsSelected = true;
+
+        var search = vm.SearchCommand.ExecuteAsync(null);
+        await WaitUntil(() => session.SearchCallCount >= 1);
+
+        var nextDate = DateTime.Today.AddDays(2);
+        vm.DaysAheadText = "3";
+        vm.SelectedDate = nextDate;
+        vm.WeekdayFromHour = 17;
+        vm.WeekdayFromMinute = 0;
+        vm.WeekdayToHour = 20;
+        vm.WeekdayToMinute = 0;
+
+        await WaitUntil(() => session.SearchCallCount >= 2);
+
+        Assert.Equal(3, session.LastSearchRequest!.DaysAhead);
+        Assert.Equal(DateOnly.FromDateTime(nextDate), session.LastSearchRequest.StartDate);
+        Assert.Equal(new TimeOnly(17, 0), session.LastSearchRequest.WeekdayWindow.From);
+        Assert.Equal(new TimeOnly(20, 0), session.LastSearchRequest.WeekdayWindow.To);
+
+        vm.StopCommand.Execute(null);
+        await search;
+    }
+
+    [Fact]
+    public async Task Search_ShowsOnlyNewSlotsOnLaterCycles()
+    {
+        var first = new AvailabilitySlot(
+            "Amik Sport",
+            new DateOnly(2026, 10, 19),
+            new TimeOnly(18, 0),
+            new TimeOnly(19, 0));
+        var added = new AvailabilitySlot(
+            "Amik Sport",
+            new DateOnly(2026, 10, 20),
+            new TimeOnly(19, 0),
+            new TimeOnly(20, 0));
+        var session = new FakeClickToPlaySession
+        {
+            AvailabilityForCall = call => call == 1 ? [first] : [first, added]
+        };
+        var stamp = 0;
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
+        {
+            SearchLoopDelayOverride = TimeSpan.FromMilliseconds(80),
+            ScanClock = () => new DateTime(2026, 10, 20, 21, 0, 0).AddMinutes(stamp++),
+            ResultsLogPath = TempLogPath()
+        };
+
+        await vm.LoadSportsCommand.ExecuteAsync(null);
+        vm.SelectedSport = vm.Sports[0];
+        await WaitUntil(() => vm.Cities.Count > 0);
+        vm.SelectedCity = vm.Cities[0];
+        await WaitUntil(() => vm.Locations.Count > 0);
+        vm.Locations[0].IsSelected = true;
+
+        var search = vm.SearchCommand.ExecuteAsync(null);
+        await WaitUntil(() => session.SearchCallCount >= 1 && vm.Results.Count >= 3);
+        Assert.Equal("20.10.2026 21:00:00", vm.Results[0]);
+        Assert.Contains(vm.Results, line => line.Contains("18:00", StringComparison.Ordinal));
+
+        await WaitUntil(() => session.SearchCallCount >= 2
+            && vm.Results.Count(line => line.StartsWith("20.10.2026", StringComparison.Ordinal)) >= 2
+            && vm.Results.Any(line => line.Contains("19:00", StringComparison.Ordinal)));
+        Assert.Contains(vm.Results, line => line.Contains("18:00", StringComparison.Ordinal));
+        Assert.Contains(vm.Results, line => line.Contains("19:00", StringComparison.Ordinal));
+        Assert.Single(vm.Results, line => line.Contains("18:00", StringComparison.Ordinal));
+        Assert.Equal(string.Empty, vm.Results[^1]);
+
+        vm.StopCommand.Execute(null);
+        await search;
+    }
+
+    [Fact]
+    public async Task Search_AfterCrash_ClearsLogAndSearchesAgain()
+    {
+        var logPath = TempLogPath();
+        var slot = new AvailabilitySlot(
+            "Amik Sport",
+            new DateOnly(2026, 10, 19),
+            new TimeOnly(18, 0),
+            new TimeOnly(19, 0));
+        var session = new FakeClickToPlaySession
+        {
+            Availability = [slot],
+            ThrowOnSearchCallNumber = 2,
+            SearchException = new InvalidOperationException("site busy")
+        };
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
+        {
+            SearchLoopDelayOverride = TimeSpan.FromMilliseconds(80),
+            ResultsLogPath = logPath
+        };
+
+        await vm.LoadSportsCommand.ExecuteAsync(null);
+        vm.SelectedSport = vm.Sports[0];
+        await WaitUntil(() => vm.Cities.Count > 0);
+        vm.SelectedCity = vm.Cities[0];
+        await WaitUntil(() => vm.Locations.Count > 0);
+        vm.Locations[0].IsSelected = true;
+
+        var search = vm.SearchCommand.ExecuteAsync(null);
+        await WaitUntil(() => session.SearchCallCount >= 3 && vm.Results.Any(line => line.Contains("Amik Sport", StringComparison.Ordinal)));
+        Assert.True(vm.IsSearching);
+        Assert.Contains(vm.Results, line => line.Contains("18:00", StringComparison.Ordinal));
+        Assert.Contains("Amik Sport", File.ReadAllText(logPath), StringComparison.Ordinal);
+
+        vm.StopCommand.Execute(null);
+        await search;
+    }
+
+    [Fact]
+    public async Task Search_RereadsLocationCheckboxesEachCycle()
+    {
+        var session = new FakeClickToPlaySession();
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
+        {
+            SearchLoopDelayOverride = TimeSpan.FromMilliseconds(80),
+            ResultsLogPath = TempLogPath()
+        };
+
+        await vm.LoadSportsCommand.ExecuteAsync(null);
+        vm.SelectedSport = vm.Sports[0];
+        await WaitUntil(() => vm.Cities.Count > 0);
+        vm.SelectedCity = vm.Cities[0];
+        await WaitUntil(() => vm.Locations.Count > 1);
+        vm.Locations[0].IsSelected = true;
+        vm.Locations[1].IsSelected = false;
+
+        var search = vm.SearchCommand.ExecuteAsync(null);
+        await WaitUntil(() => session.SearchCallCount >= 1);
+        Assert.Single(session.LastSearchRequest!.Locations);
+
+        vm.Locations[1].IsSelected = true;
+        await WaitUntil(() => session.SearchCallCount >= 2
+            && session.LastSearchRequest!.Locations.Count == 2);
+
+        vm.StopCommand.Execute(null);
+        await search;
+    }
+
+    private static string TempLogPath() =>
+        Path.Combine(Path.GetTempPath(), $"clickplay-results-{Guid.NewGuid():N}.txt");
 
     private static async Task WaitUntil(Func<bool> condition)
     {

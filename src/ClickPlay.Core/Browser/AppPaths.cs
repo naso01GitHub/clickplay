@@ -22,4 +22,21 @@ public static class AppPaths
         Directory.CreateDirectory(dir);
         return dir;
     }
+
+    /// <summary>
+    /// Text file for the Results window log (app data, not the repo).
+    /// </summary>
+    /// <example>
+    /// <code>
+    /// var path = AppPaths.ResultsLogFile();
+    /// </code>
+    /// </example>
+    public static string ResultsLogFile()
+    {
+        var dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "ClickPlay");
+        Directory.CreateDirectory(dir);
+        return Path.Combine(dir, "results-log.txt");
+    }
 }

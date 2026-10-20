@@ -39,7 +39,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
             {
                 Headless = options.Headless,
-                SlowMo = options.Headless ? 0 : 250
+                SlowMo = 0
             }).ConfigureAwait(false);
             _context = await _browser.NewContextAsync(new BrowserNewContextOptions
             {
@@ -335,7 +335,6 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                     cancellationToken.ThrowIfCancellationRequested();
 
                     progress?.Report($"Checking {venue.Name}, {day:yyyy-MM-dd}…");
-                    await PauseBeforeInspectClickAsync(cancellationToken).ConfigureAwait(false);
                     var found = await CollectVenueSlotsAsync(page, venue, day, window, cancellationToken)
                         .ConfigureAwait(false);
                     slots.AddRange(found);
@@ -680,14 +679,6 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     }
 
     /// <summary>
-    /// Pause before each inspect click so the listing and hour dropdown can settle.
-    /// </summary>
-    private static async Task PauseBeforeInspectClickAsync(CancellationToken cancellationToken)
-    {
-        await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
     /// After a click or form submit, wait for the document to load (not networkidle — that stalls the datepicker).
     /// </summary>
     private static async Task WaitForSiteToRespondAsync(IPage page, CancellationToken cancellationToken)
@@ -832,8 +823,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             return;
         }
 
-        await PauseBeforeInspectClickAsync(cancellationToken).ConfigureAwait(false);
-        await HumanPointer.ClickAsync(page, opener, cancellationToken).ConfigureAwait(false);
+        await opener.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
 
         var picker = page.Locator("#ui-datepicker-div");
         try
@@ -860,14 +850,12 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                 break;
             }
 
-            await PauseBeforeInspectClickAsync(cancellationToken).ConfigureAwait(false);
-            await HumanPointer.ClickAsync(page, next, cancellationToken, timeoutMs: 5_000).ConfigureAwait(false);
+            await next.ClickAsync(new LocatorClickOptions { Timeout = 5_000 }).ConfigureAwait(false);
         }
 
         if (await dayLink.First.IsVisibleAsync().ConfigureAwait(false))
         {
-            await PauseBeforeInspectClickAsync(cancellationToken).ConfigureAwait(false);
-            await HumanPointer.ClickAsync(page, dayLink.First, cancellationToken).ConfigureAwait(false);
+            await dayLink.First.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
             try
             {
                 await picker.WaitForAsync(new LocatorWaitForOptions
@@ -998,8 +986,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             return false;
         }
 
-        await PauseBeforeInspectClickAsync(cancellationToken).ConfigureAwait(false);
-        await HumanPointer.ClickAsync(page, timeButton, cancellationToken).ConfigureAwait(false);
+        await timeButton.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
 
         var optionRoot = page.Locator("div.dropdown-options.time.toclear_filters, #hours_to_move");
         try
@@ -1055,8 +1042,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             return false;
         }
 
-        await PauseBeforeInspectClickAsync(cancellationToken).ConfigureAwait(false);
-        await HumanPointer.ClickAsync(page, option, cancellationToken).ConfigureAwait(false);
+        await option.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
         await WaitForListingAfterCalendarAsync(page, cancellationToken).ConfigureAwait(false);
         return true;
     }
