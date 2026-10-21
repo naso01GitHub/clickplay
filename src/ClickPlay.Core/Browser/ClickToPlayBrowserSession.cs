@@ -7,10 +7,21 @@ namespace ClickPlay.Core.Browser;
 
 /// <summary>
 /// One Chromium page while a cascade step or search cycle is running. The GUI closes it after sports, cities, and locations.
+/// The sport is chosen by clicking the site's sport bar (stored in the site session). The city listing and every
+/// club schedule are then opened by URL (<c>/clubs/index.php?city=…</c>, <c>/club/?club=…&amp;date=…</c>),
+/// one page load per club and day, instead of driving the datepicker, clock, and club-name popups.
 /// </summary>
 public sealed class ClickToPlayBrowserSession : IClickToPlaySession
 {
     public const string HomeUrl = "https://clicktoplay.io/";
+    public const string ClubsListingUrl = "https://clicktoplay.io/clubs/index.php";
+    public const string ClubProfileUrl = "https://clicktoplay.io/club/";
+
+    private const string SiteBusyMessage =
+        "clicktoplay.io is busy (its database reports Too many connections). Wait a minute and try again.";
+
+    private static readonly TimeSpan[] BusyRetryDelays =
+        [TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(6), TimeSpan.FromSeconds(12)];
 
     private readonly OverlayRecovery _overlayRecovery = new();
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -52,7 +63,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             _startedHeadless = options.Headless;
             _currentSport = null;
 
-            await GotoHomeAndSettleAsync(_page).ConfigureAwait(false);
+            await GotoHomeAndSettleAsync(_page, cancellationToken).ConfigureAwait(false);
             await TryRecoverSportsPanelAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -68,7 +79,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         try
         {
             var page = RequirePage();
-            await EnsureHomeAsync(page).ConfigureAwait(false);
+            await EnsureHomeAsync(page, cancellationToken).ConfigureAwait(false);
             if (!await TryRecoverSportsPanelAsync(cancellationToken).ConfigureAwait(false))
             {
                 throw new InvalidOperationException("The sports panel is not clickable. A diagnostic screenshot was saved.");
@@ -112,29 +123,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         try
         {
             var page = RequirePage();
-            await EnsureHomeAsync(page).ConfigureAwait(false);
-            if (!await TryRecoverSportsPanelAsync(cancellationToken).ConfigureAwait(false))
-            {
-                throw new InvalidOperationException("The sports panel is not clickable. A diagnostic screenshot was saved.");
-            }
-
-            var sportBox = page.Locator(".sport-container.index-sport-nav")
-                .Filter(new LocatorFilterOptions { HasText = sport.Name })
-                .First;
-            if (!await sportBox.IsVisibleAsync().ConfigureAwait(false))
-            {
-                sportBox = page.Locator(".sport-container.nav")
-                    .Filter(new LocatorFilterOptions { HasText = sport.Name })
-                    .First;
-            }
-
-            if (!await sportBox.IsVisibleAsync().ConfigureAwait(false))
-            {
-                throw new InvalidOperationException($"The site layout changed: sport '{sport.Name}' was not found.");
-            }
-
-            await sportBox.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
-            await WaitForSiteToRespondAsync(page, cancellationToken).ConfigureAwait(false);
+            await ClickSportOnHomeAsync(page, sport, cancellationToken).ConfigureAwait(false);
 
             var reserve = page.GetByRole(AriaRole.Button, new PageGetByRoleOptions
             {
@@ -146,13 +135,12 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             {
                 await reserve.WaitForAsync(new LocatorWaitForOptions { Timeout = 15_000 }).ConfigureAwait(false);
             }
-            catch (PlaywrightException)
+            catch (Exception ex) when (IsPlaywrightFailure(ex))
             {
             }
 
             await ClickReserveAsync(page).ConfigureAwait(false);
             await WaitForClubsPageAsync(page).ConfigureAwait(false);
-            _currentSport = sport;
 
             var cities = await ReadCitiesAsync(page).ConfigureAwait(false);
             if (cities.Count == 0)
@@ -178,8 +166,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         try
         {
             var page = RequirePage();
-            var needSport = _currentSport is null
-                || !string.Equals(_currentSport.Name, sport.Name, StringComparison.Ordinal)
+            var needSport = !IsCurrentSport(sport)
                 || !page.Url.Contains("/clubs", StringComparison.OrdinalIgnoreCase);
             if (needSport)
             {
@@ -196,79 +183,38 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                 page = RequirePage();
             }
 
-            await OpenCityFilterAsync(page).ConfigureAwait(false);
-
             var cityId = await page.EvaluateAsync<string?>(
                 """
                 (name) => {
                   const norm = (s) => (s || '').trim().split(',')[0].trim();
                   const target = [...document.querySelectorAll('.city[data-city]')].find(n =>
-                    norm(n.textContent).localeCompare(name, undefined, { sensitivity: 'accent' }) === 0);
+                    norm(n.querySelector('.city-name-popup')?.textContent || n.textContent)
+                      .localeCompare(name, undefined, { sensitivity: 'accent' }) === 0);
                   return target ? (target.getAttribute('data-city') || '') : '';
                 }
                 """,
                 city.Name).ConfigureAwait(false);
 
-            if (string.IsNullOrWhiteSpace(cityId))
+            if (string.IsNullOrWhiteSpace(cityId) || cityId == "cl")
             {
                 throw new InvalidOperationException($"The site layout changed: city '{city.Name}' was not found.");
             }
 
-            var filtered = page.WaitForResponseAsync(
-                response => response.Url.Contains("/clubs", StringComparison.OrdinalIgnoreCase),
-                new PageWaitForResponseOptions { Timeout = 30_000 });
-
-            var typed = await TrySelectCityOptionAsync(page, city.Name, cityId, cancellationToken)
+            await GotoAndCheckBusyAsync(page, BuildListingUrl(cityId, DateTime.Now), cancellationToken)
                 .ConfigureAwait(false);
-            if (!typed)
-            {
-                await page.EvaluateAsync(
-                    """
-                    (id) => {
-                      const hidden = document.querySelector('#search_city');
-                      if (hidden) hidden.value = id;
-                      const form = document.getElementById('search_form');
-                      if (form) form.submit();
-                    }
-                    """,
-                    cityId).ConfigureAwait(false);
-            }
 
             try
             {
-                await filtered.ConfigureAwait(false);
-            }
-            catch (PlaywrightException)
-            {
-                await page.WaitForTimeoutAsync(2_000).ConfigureAwait(false);
-            }
-
-            await WaitForSiteToRespondAsync(page, cancellationToken).ConfigureAwait(false);
-
-            await page.Locator("a.club-card h3.club-name").First.WaitForAsync(new LocatorWaitForOptions
-            {
-                State = WaitForSelectorState.Attached,
-                Timeout = 15_000
-            }).ConfigureAwait(false);
-
-            var now = DateTime.Now;
-            if (ListingTimePlanner.ShouldUseTomorrowMorning(now))
-            {
-                var tomorrow = ListingTimePlanner.ListingDate(now);
-                await SelectDayOnCalendarAsync(page, tomorrow, cancellationToken).ConfigureAwait(false);
-                await TrySelectExactHourAsync(page, ListingTimePlanner.MorningHour, cancellationToken)
-                    .ConfigureAwait(false);
-                try
+                await page.Locator("a.club-card h3.club-name").First.WaitForAsync(new LocatorWaitForOptions
                 {
-                    await page.Locator("a.club-card h3.club-name").First.WaitForAsync(new LocatorWaitForOptions
-                    {
-                        State = WaitForSelectorState.Attached,
-                        Timeout = 15_000
-                    }).ConfigureAwait(false);
-                }
-                catch (PlaywrightException)
-                {
-                }
+                    State = WaitForSelectorState.Attached,
+                    Timeout = 15_000
+                }).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (IsPlaywrightFailure(ex))
+            {
+                await CaptureDiagnosticsAsync("No club cards on the city listing.").ConfigureAwait(false);
+                throw new InvalidOperationException("The site layout changed: no locations were found for this city.");
             }
 
             await ScrollToLoadAllAsync(page).ConfigureAwait(false);
@@ -289,6 +235,10 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Opens <c>/club/?club={slug}&amp;date={yyyy-MM-dd}</c> for each selected location and day. A busy site,
+    /// a timeout, or a missing schedule skips that club and day; only a closed browser or Stop ends the scan.
+    /// </remarks>
     public async Task<IReadOnlyList<AvailabilitySlot>> SearchAvailabilityAsync(
         SearchRequest request,
         IProgress<string>? progress,
@@ -299,69 +249,48 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         try
         {
             var page = RequirePage();
-            if (!page.Url.Contains("/clubs", StringComparison.OrdinalIgnoreCase))
+            if (!IsCurrentSport(request.Sport))
             {
-                _gate.Release();
-                try
-                {
-                    await SelectSportAsync(request.Sport, cancellationToken).ConfigureAwait(false);
-                    await SelectCityAsync(request.Sport, request.City, cancellationToken).ConfigureAwait(false);
-                }
-                catch (InvalidOperationException ex) when (IsSkippableOpenFailure(ex))
-                {
-                    progress?.Report(ex.Message);
-                    return [];
-                }
-                finally
-                {
-                    await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                }
-
-                page = RequirePage();
+                progress?.Report($"Selecting {request.Sport.Name} on the sport bar…");
+                await ClickSportOnHomeAsync(page, request.Sport, cancellationToken).ConfigureAwait(false);
             }
 
             var slots = new List<AvailabilitySlot>();
+            var attempts = 0;
+            var schedulesRead = 0;
+            string? lastSkip = null;
             foreach (var day in SearchDatePlanner.Days(request.StartDate, request.DaysAhead))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (await StillBusyAfterRetryAsync(page).ConfigureAwait(false))
-                {
-                    progress?.Report($"Listing is busy on {day:yyyy-MM-dd}; next day.");
-                    continue;
-                }
-
                 var window = SearchDatePlanner.WindowFor(day, request.WeekdayWindow, request.WeekendWindow);
-                progress?.Report($"Selecting {day:yyyy-MM-dd} on the site calendar…");
-                if (!await SelectDayOnCalendarAsync(page, day, cancellationToken).ConfigureAwait(false))
-                {
-                    progress?.Report($"Site calendar cannot select {day:yyyy-MM-dd}; next day.");
-                    continue;
-                }
-
-                progress?.Report($"Selecting hour for {day:yyyy-MM-dd}…");
-                var hourReady = await TrySelectHourFromTimeButtonAsync(page, window, cancellationToken)
-                    .ConfigureAwait(false);
-                if (!hourReady)
-                {
-                    progress?.Report($"Clock has no usable hour (only 0.00 / Изчисти or none in window); next day.");
-                    continue;
-                }
-
                 foreach (var venue in request.Locations)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-
-                    progress?.Report($"Checking {venue.Name}, {day:yyyy-MM-dd}…");
-                    if (await StillBusyAfterRetryAsync(page).ConfigureAwait(false))
+                    if (string.IsNullOrWhiteSpace(venue.ClubSlug))
                     {
-                        progress?.Report($"Listing is busy for {venue.Name}; next location.");
+                        progress?.Report($"{venue.Name} has no club link; reload the locations.");
                         continue;
                     }
 
-                    var found = await CollectVenueSlotsAsync(page, venue, day, window, cancellationToken)
-                        .ConfigureAwait(false);
-                    slots.AddRange(found);
+                    attempts++;
+                    progress?.Report($"Checking {venue.Name}, {day:yyyy-MM-dd}…");
+                    try
+                    {
+                        slots.AddRange(await CollectVenueSlotsAsync(page, venue, day, window, cancellationToken)
+                            .ConfigureAwait(false));
+                        schedulesRead++;
+                    }
+                    catch (Exception ex) when (IsSkippableVenueFailure(page, ex))
+                    {
+                        lastSkip = $"Skipped {venue.Name}, {day:yyyy-MM-dd}: {FirstLine(ex.Message)}";
+                        progress?.Report(lastSkip);
+                    }
                 }
+            }
+
+            if (attempts > 0 && schedulesRead == 0)
+            {
+                throw new InvalidOperationException(
+                    $"No club schedule could be read in this scan. Last: {lastSkip}");
             }
 
             return slots;
@@ -405,6 +334,49 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         }
     }
 
+    /// <summary>
+    /// Club listing URL for one city. After 17:00 it lists tomorrow at 10:00 (see <see cref="ListingTimePlanner"/>).
+    /// </summary>
+    /// <param name="cityId"><c>data-city</c> of the city, e.g. <c>42</c> for Варна.</param>
+    /// <param name="now">Local time used for the evening rule.</param>
+    /// <returns>Absolute <c>/clubs/index.php</c> URL.</returns>
+    /// <example>
+    /// <code>
+    /// var url = ClickToPlayBrowserSession.BuildListingUrl("42", new DateTime(2026, 10, 21, 20, 0, 0));
+    /// // https://clicktoplay.io/clubs/index.php?city=42&amp;date=2026-10-22&amp;hour=10:00
+    /// </code>
+    /// </example>
+    public static string BuildListingUrl(string cityId, DateTime now)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(cityId);
+        var url = $"{ClubsListingUrl}?city={Uri.EscapeDataString(cityId.Trim())}";
+        if (ListingTimePlanner.ShouldUseTomorrowMorning(now))
+        {
+            url += $"&date={ListingTimePlanner.ListingDate(now):yyyy-MM-dd}&hour={ListingTimePlanner.MorningHour:HH:mm}";
+        }
+
+        return url;
+    }
+
+    /// <summary>
+    /// Club profile URL for one day. No <c>hour</c> is sent: the site hides slots before that hour,
+    /// and the GUI time window is applied after reading.
+    /// </summary>
+    /// <param name="clubSlug">The <c>club</c> query value from the club card link.</param>
+    /// <param name="day">Schedule day.</param>
+    /// <returns>Absolute <c>/club/</c> URL.</returns>
+    /// <example>
+    /// <code>
+    /// var url = ClickToPlayBrowserSession.BuildClubUrl("supersport", new DateOnly(2026, 10, 23));
+    /// // https://clicktoplay.io/club/?club=supersport&amp;date=2026-10-23
+    /// </code>
+    /// </example>
+    public static string BuildClubUrl(string clubSlug, DateOnly day)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(clubSlug);
+        return $"{ClubProfileUrl}?club={Uri.EscapeDataString(clubSlug.Trim())}&date={day:yyyy-MM-dd}";
+    }
+
     private IPage RequirePage()
     {
         if (_page is null)
@@ -415,28 +387,185 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         return _page;
     }
 
-    private async Task EnsureHomeAsync(IPage page)
+    private bool IsCurrentSport(Sport sport) =>
+        _currentSport is not null && string.Equals(_currentSport.Name, sport.Name, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Playwright reports timeouts as <see cref="TimeoutException"/>, which is not a <see cref="PlaywrightException"/>.
+    /// </summary>
+    private static bool IsPlaywrightFailure(Exception ex) => ex is PlaywrightException or TimeoutException;
+
+    /// <summary>
+    /// A club/day problem the scan can step over. A closed page (user closed Chromium, browser crash) is not.
+    /// </summary>
+    private static bool IsSkippableVenueFailure(IPage page, Exception ex) =>
+        !page.IsClosed && (IsPlaywrightFailure(ex) || ex is SkipVenueException);
+
+    private static string FirstLine(string message)
+    {
+        var line = message.Split('\n', 2)[0].Trim();
+        return line.Length > 140 ? line[..137] + "…" : line;
+    }
+
+    private async Task EnsureHomeAsync(IPage page, CancellationToken cancellationToken)
     {
         if (page.Url.StartsWith(HomeUrl, StringComparison.OrdinalIgnoreCase)
             && !page.Url.Contains("/clubs", StringComparison.OrdinalIgnoreCase)
-            && !page.Url.Contains("lang/", StringComparison.OrdinalIgnoreCase))
+            && !page.Url.Contains("/club/", StringComparison.OrdinalIgnoreCase)
+            && !page.Url.Contains("lang/", StringComparison.OrdinalIgnoreCase)
+            && !await IsSiteDatabaseBusyAsync(page).ConfigureAwait(false))
         {
             return;
         }
 
-        await GotoHomeAndSettleAsync(page).ConfigureAwait(false);
+        await GotoHomeAndSettleAsync(page, cancellationToken).ConfigureAwait(false);
         _currentSport = null;
     }
 
     /// <summary>
-    /// Loads the home page, then waits 2 seconds so the language prompt can appear.
-    /// Documented last-resort wait (not a generic sleep).
+    /// On the home page, clicks the sport in the sport bar so the site stores it in the session
+    /// (<c>ajax/set_sport.php</c>, cookie <c>selected_sport</c>). Club pages then show that sport's courts.
     /// </summary>
-    private static async Task GotoHomeAndSettleAsync(IPage page)
+    private async Task ClickSportOnHomeAsync(IPage page, Sport sport, CancellationToken cancellationToken)
+    {
+        await EnsureHomeAsync(page, cancellationToken).ConfigureAwait(false);
+        if (!await TryRecoverSportsPanelAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException("The sports panel is not clickable. A diagnostic screenshot was saved.");
+        }
+
+        // The site sets selected_sport=1 (Тенис) on first load, and Запази on the language prompt reloads the page,
+        // so a click can land on the old document and be lost. Click, then confirm the cookie; retry if it did not change.
+        string? stored = null;
+        string? sportId = null;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var sportBox = await FindSportBoxAsync(page, sport).ConfigureAwait(false)
+                ?? throw new InvalidOperationException($"The site layout changed: sport '{sport.Name}' was not found.");
+            sportId = await sportBox.GetAttributeAsync("data-id").ConfigureAwait(false);
+            try
+            {
+                await page.RunAndWaitForResponseAsync(
+                    () => sportBox.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }),
+                    response => response.Url.Contains("set_sport", StringComparison.OrdinalIgnoreCase),
+                    new PageRunAndWaitForResponseOptions { Timeout = 10_000 }).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (IsPlaywrightFailure(ex) && !page.IsClosed)
+            {
+            }
+
+            await WaitForSiteToRespondAsync(page, cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(sportId))
+            {
+                _currentSport = sport;
+                return;
+            }
+
+            stored = await ReadSelectedSportCookieAsync().ConfigureAwait(false);
+            if (string.Equals(stored, sportId, StringComparison.Ordinal))
+            {
+                _currentSport = sport;
+                return;
+            }
+
+            await EnsureHomeAsync(page, cancellationToken).ConfigureAwait(false);
+            await TryRecoverSportsPanelAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new InvalidOperationException(
+            $"The site did not switch to '{sport.Name}' (selected_sport={stored ?? "none"}, expected {sportId}).");
+    }
+
+    /// <summary>
+    /// Visible sport-bar box whose first text line is exactly the sport name
+    /// (so "Тенис" does not match "Тенис на маса").
+    /// </summary>
+    private static async Task<ILocator?> FindSportBoxAsync(IPage page, Sport sport)
+    {
+        var id = await page.EvaluateAsync<string?>(
+            """
+            (name) => {
+              const visible = (sel) => [...document.querySelectorAll(sel)].filter(n => n.offsetWidth > 10 && n.offsetHeight > 10);
+              const title = (n) => (n.innerText || '').trim().split('\n')[0].trim();
+              for (const sel of ['.sport-container.index-sport-nav', '.sport-container.nav', '.sport-container']) {
+                const box = visible(sel).find(n => title(n) === name && n.getAttribute('data-id'));
+                if (box) return box.getAttribute('data-id');
+              }
+              return '';
+            }
+            """,
+            sport.Name).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
+        var box = page.Locator($".sport-container[data-id='{id}']").Locator("visible=true").First;
+        return await box.IsVisibleAsync().ConfigureAwait(false) ? box : null;
+    }
+
+    private async Task<string?> ReadSelectedSportCookieAsync()
+    {
+        if (_context is null)
+        {
+            return null;
+        }
+
+        var cookies = await _context.CookiesAsync([HomeUrl]).ConfigureAwait(false);
+        return cookies.FirstOrDefault(c => c.Name == "selected_sport")?.Value;
+    }
+
+    /// <summary>
+    /// Loads the home page, then waits 2 seconds so the language prompt can appear.
+    /// Documented last-resort wait (not a generic sleep). If the site answers with its MySQL
+    /// <c>Too many connections</c> page instead, reloads after 3, 6, and 12 seconds before giving up.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The site is still busy after the retries.</exception>
+    private static async Task GotoHomeAndSettleAsync(IPage page, CancellationToken cancellationToken)
     {
         await page.GotoAsync(HomeUrl, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded })
             .ConfigureAwait(false);
+        foreach (var delay in BusyRetryDelays)
+        {
+            if (!await IsSiteDatabaseBusyAsync(page).ConfigureAwait(false))
+            {
+                break;
+            }
+
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded })
+                .ConfigureAwait(false);
+        }
+
+        if (await IsSiteDatabaseBusyAsync(page).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(SiteBusyMessage);
+        }
+
         await page.WaitForTimeoutAsync(2_000).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Opens a URL. If the visible page shows MySQL <c>Too many connections</c>, waits 3 seconds and reloads once.
+    /// </summary>
+    /// <exception cref="SkipVenueException">The page is still busy after the reload.</exception>
+    private static async Task GotoAndCheckBusyAsync(IPage page, string url, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        await page.GotoAsync(url, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded })
+            .ConfigureAwait(false);
+        if (!await IsSiteDatabaseBusyAsync(page).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        await Task.Delay(3_000, cancellationToken).ConfigureAwait(false);
+        await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded })
+            .ConfigureAwait(false);
+        if (await IsSiteDatabaseBusyAsync(page).ConfigureAwait(false))
+        {
+            throw new SkipVenueException("clicktoplay.io is busy (Too many connections).");
+        }
     }
 
     /// <summary>
@@ -453,7 +582,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                     "() => (document.body && document.body.innerText) || ''").ConfigureAwait(false);
                 break;
             }
-            catch (PlaywrightException)
+            catch (PlaywrightException) when (!page.IsClosed)
             {
                 await page.WaitForTimeoutAsync(400).ConfigureAwait(false);
             }
@@ -479,12 +608,10 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         }
 
         await page.WaitForTimeoutAsync(3_000).ConfigureAwait(false);
+        await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded })
+            .ConfigureAwait(false);
         return await IsSiteDatabaseBusyAsync(page).ConfigureAwait(false);
     }
-
-    private static bool IsSkippableOpenFailure(InvalidOperationException ex) =>
-        ex.Message.Contains("sports panel is not clickable", StringComparison.OrdinalIgnoreCase)
-        || ex.Message.Contains("database is full", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Dismisses overlays and retries the sports bar. Returns false after a screenshot instead of throwing.
@@ -500,6 +627,11 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             {
                 return true;
             }
+        }
+
+        if (await IsSiteDatabaseBusyAsync(page).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(SiteBusyMessage);
         }
 
         await CaptureDiagnosticsAsync("Sports panel still unresponsive after overlay recovery.").ConfigureAwait(false);
@@ -522,7 +654,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                 await WaitForSiteToRespondAsync(page, CancellationToken.None).ConfigureAwait(false);
                 return;
             }
-            catch (PlaywrightException)
+            catch (Exception ex) when (IsPlaywrightFailure(ex))
             {
             }
         }
@@ -536,14 +668,14 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                 await WaitForSiteToRespondAsync(page, CancellationToken.None).ConfigureAwait(false);
                 return;
             }
-            catch (PlaywrightException)
+            catch (Exception ex) when (IsPlaywrightFailure(ex))
             {
             }
         }
 
         if (!page.Url.Contains("/clubs", StringComparison.OrdinalIgnoreCase))
         {
-            await page.GotoAsync("https://clicktoplay.io/clubs/index.php", new PageGotoOptions
+            await page.GotoAsync(ClubsListingUrl, new PageGotoOptions
             {
                 WaitUntil = WaitUntilState.DOMContentLoaded
             }).ConfigureAwait(false);
@@ -557,15 +689,20 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             await page.WaitForURLAsync("**/clubs/**", new PageWaitForURLOptions { Timeout = 15_000 })
                 .ConfigureAwait(false);
         }
-        catch (PlaywrightException)
+        catch (Exception ex) when (IsPlaywrightFailure(ex))
         {
             if (!page.Url.Contains("/clubs", StringComparison.OrdinalIgnoreCase))
             {
-                await page.GotoAsync("https://clicktoplay.io/clubs/index.php", new PageGotoOptions
+                await page.GotoAsync(ClubsListingUrl, new PageGotoOptions
                 {
                     WaitUntil = WaitUntilState.DOMContentLoaded
                 }).ConfigureAwait(false);
             }
+        }
+
+        if (await StillBusyAfterRetryAsync(page).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException("clicktoplay.io is busy (Too many connections). Try again in a minute.");
         }
 
         await OpenCityFilterAsync(page).ConfigureAwait(false);
@@ -593,7 +730,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                 Timeout = 5_000
             }).ConfigureAwait(false);
         }
-        catch (PlaywrightException)
+        catch (Exception ex) when (IsPlaywrightFailure(ex))
         {
             await page.EvaluateAsync(
                 """
@@ -619,42 +756,6 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             State = WaitForSelectorState.Attached,
             Timeout = 10_000
         }).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Types the city name so the popup filters, then clicks <c>.city[data-city]</c>.
-    /// </summary>
-    private static async Task<bool> TrySelectCityOptionAsync(
-        IPage page,
-        string cityName,
-        string cityId,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var input = page.Locator("input.find-city").First;
-        try
-        {
-            await input.FillAsync(cityName, new LocatorFillOptions { Timeout = 5_000 }).ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-        }
-
-        var option = page.Locator($".city[data-city='{cityId}']").First;
-        try
-        {
-            await option.WaitForAsync(new LocatorWaitForOptions
-            {
-                State = WaitForSelectorState.Visible,
-                Timeout = 8_000
-            }).ConfigureAwait(false);
-            await option.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
-            return true;
-        }
-        catch (PlaywrightException)
-        {
-            return false;
-        }
     }
 
     private static async Task<IReadOnlyList<City>> ReadCitiesAsync(IPage page)
@@ -688,6 +789,10 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         }
     }
 
+    /// <summary>
+    /// Reads club cards that link to a clicktoplay.io club profile, with the <c>club</c> slug from the link.
+    /// Advert cards that link to other sites are skipped.
+    /// </summary>
     private static async Task<IReadOnlyList<Venue>> ReadVenuesAsync(IPage page)
     {
         var rows = await page.EvaluateAsync<ScrapedVenue[]>(
@@ -698,495 +803,31 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
               for (const card of document.querySelectorAll('a.club-card')) {
                 const name = (card.querySelector('h3.club-name')?.textContent || '').trim().split('\n')[0].trim();
                 const address = (card.querySelector('.club-address')?.textContent || '').trim();
-                if (!name || name.length > 120 || seen.has(name)) continue;
+                let slug = '';
+                try {
+                  const url = new URL(card.href, location.href);
+                  if (url.hostname.endsWith('clicktoplay.io') && url.pathname.startsWith('/club/')) {
+                    slug = url.searchParams.get('club') || '';
+                  }
+                } catch (e) { }
+                if (!name || !slug || name.length > 120 || seen.has(name)) continue;
                 seen.add(name);
-                results.push({ name, address });
+                results.push({ name, address, slug });
               }
               return results;
             }
             """).ConfigureAwait(false);
 
         return (rows ?? [])
-            .Where(r => r is not null && !string.IsNullOrWhiteSpace(r.Name))
-            .Select(r => new Venue(r.Name.Trim(), (r.Address ?? string.Empty).Trim()))
+            .Where(r => r is not null && !string.IsNullOrWhiteSpace(r.Name) && !string.IsNullOrWhiteSpace(r.Slug))
+            .Select(r => new Venue(r.Name.Trim(), (r.Address ?? string.Empty).Trim(), r.Slug.Trim()))
             .ToArray();
     }
 
-    private async Task CaptureDiagnosticsAsync(string reason)
-    {
-        if (_page is null)
-        {
-            return;
-        }
-
-        var dir = AppPaths.DiagnosticsDirectory();
-        var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
-        await _page.ScreenshotAsync(new PageScreenshotOptions
-        {
-            Path = Path.Combine(dir, $"overlay-{stamp}.png")
-        }).ConfigureAwait(false);
-        var title = await _page.TitleAsync().ConfigureAwait(false);
-        await File.WriteAllTextAsync(
-            Path.Combine(dir, $"overlay-{stamp}.txt"),
-            $"url={_page.Url}{Environment.NewLine}title={title}{Environment.NewLine}reason={reason}{Environment.NewLine}").ConfigureAwait(false);
-    }
-
     /// <summary>
-    /// After a click or form submit, wait for the document to load (not networkidle — that stalls the datepicker).
+    /// Opens the club profile for one day and reads every free <c>.booking-slot</c> inside the GUI window.
     /// </summary>
-    private static async Task WaitForSiteToRespondAsync(IPage page, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        try
-        {
-            await page.WaitForLoadStateAsync(
-                    LoadState.DOMContentLoaded,
-                    new PageWaitForLoadStateOptions { Timeout = 15_000 })
-                .ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-        }
-    }
-
-    /// <summary>
-    /// After the datepicker <c>onSelect</c>, wait until club cards exist. Does not wait for a full navigation
-    /// (that hangs listing AJAX). Returns false if cards never appear; does not throw on timeout.
-    /// </summary>
-    private static async Task<bool> WaitForListingAfterCalendarAsync(IPage page, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        try
-        {
-            await page.WaitForLoadStateAsync(
-                    LoadState.DOMContentLoaded,
-                    new PageWaitForLoadStateOptions { Timeout = 5_000 })
-                .ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-        }
-        catch (TimeoutException)
-        {
-        }
-
-        if (await StillBusyAfterRetryAsync(page).ConfigureAwait(false))
-        {
-            return false;
-        }
-
-        return await TryWaitForClubCardsAsync(page, 30_000).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Polls the DOM for <c>a.club-card</c> without waiting for Playwright navigation to finish.
-    /// </summary>
-    private static async Task<bool> TryWaitForClubCardsAsync(IPage page, int timeoutMs)
-    {
-        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-        while (DateTime.UtcNow < deadline)
-        {
-            try
-            {
-                var remaining = Math.Max(500, (int)(deadline - DateTime.UtcNow).TotalMilliseconds);
-                await page.WaitForFunctionAsync(
-                        "() => document.querySelectorAll('a.club-card').length > 0",
-                        null,
-                        new PageWaitForFunctionOptions { Timeout = Math.Min(remaining, 5_000) })
-                    .ConfigureAwait(false);
-                return true;
-            }
-            catch (TimeoutException)
-            {
-            }
-            catch (PlaywrightException)
-            {
-                await page.WaitForTimeoutAsync(400).ConfigureAwait(false);
-            }
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// Clicks without blocking on a full page navigation (listing refresh is AJAX).
-    /// </summary>
-#pragma warning disable CS0612
-    private static Task ClickWithoutWaitingForNavigationAsync(ILocator locator, int timeoutMs = 10_000) =>
-        locator.ClickAsync(new LocatorClickOptions { Timeout = timeoutMs, NoWaitAfter = true });
-#pragma warning restore CS0612
-
-    /// <summary>
-    /// After leaving a club profile, wait until the clubs listing (name box and cards) is usable.
-    /// </summary>
-    private static async Task WaitForClubsListingReadyAsync(IPage page, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        try
-        {
-            await page.Locator("input.find-club").First.WaitForAsync(new LocatorWaitForOptions
-            {
-                State = WaitForSelectorState.Visible,
-                Timeout = 15_000
-            }).ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-        }
-
-        await TryWaitForClubCardsAsync(page, 15_000).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Sets the listing day through jQuery UI datepicker on hidden <c>#date</c> (onSelect), not hover/color clicks.
-    /// </summary>
-    /// <returns>False when the day is beyond <c>data-max</c> or the widget did not apply it.</returns>
-    private static async Task<bool> SelectDayOnCalendarAsync(
-        IPage page,
-        DateOnly day,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var expected = day.ToString("yyyy-MM-dd");
-        var applied = await TryApplyDatepickerApiAsync(page, day).ConfigureAwait(false);
-        if (applied.Error == "beyond-max")
-        {
-            return false;
-        }
-
-        if (!applied.Ok)
-        {
-            await TryClickDatepickerDayAsync(page, day, cancellationToken).ConfigureAwait(false);
-            applied = await TryApplyDatepickerApiAsync(page, day).ConfigureAwait(false);
-            if (applied.Error == "beyond-max")
-            {
-                return false;
-            }
-        }
-
-        if (!applied.Ok)
-        {
-            throw new InvalidOperationException(
-                $"The site calendar did not select {expected} (value is '{applied.Iso}').");
-        }
-
-        if (await WaitForListingAfterCalendarAsync(page, cancellationToken).ConfigureAwait(false))
-        {
-            return true;
-        }
-
-        await page.WaitForTimeoutAsync(1_000).ConfigureAwait(false);
-        applied = await TryApplyDatepickerApiAsync(page, day).ConfigureAwait(false);
-        if (applied.Error == "beyond-max" || !applied.Ok)
-        {
-            return false;
-        }
-
-        return await WaitForListingAfterCalendarAsync(page, cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Calls <c>datepicker('setDate')</c> and the widget <c>onSelect</c> on <c>#date</c>.
-    /// </summary>
-    private static async Task<DateApplyResult> TryApplyDatepickerApiAsync(IPage page, DateOnly day)
-    {
-        var result = await page.EvaluateAsync<DateApplyResult>(
-            """
-            (args) => {
-              const input = document.getElementById('date') || document.querySelector('.setsearchdate');
-              if (!input || !window.jQuery || !window.jQuery.fn || !window.jQuery.fn.datepicker) {
-                return { ok: false, iso: '', error: 'no-datepicker' };
-              }
-              const $ = window.jQuery;
-              const max = parseInt(input.getAttribute('data-max') || '14', 10);
-              const today = new Date();
-              today.setHours(0, 0, 0, 0);
-              const d = new Date(args.y, args.m - 1, args.d);
-              d.setHours(0, 0, 0, 0);
-              const diff = Math.round((d - today) / 86400000);
-              if (diff > max) {
-                return { ok: false, iso: '', error: 'beyond-max' };
-              }
-              $(input).datepicker('setDate', d);
-              const inst = $.datepicker._getInst(input);
-              const fmt = $.datepicker._get(inst, 'dateFormat');
-              const text = $.datepicker.formatDate(fmt, d, $.datepicker._getFormatConfig(inst));
-              const onSelect = $.datepicker._get(inst, 'onSelect');
-              if (typeof onSelect === 'function') {
-                onSelect.apply(input, [text, inst]);
-              } else {
-                $(input).trigger('change');
-              }
-              const setsearch = document.getElementById('setsearchdate');
-              if (setsearch) setsearch.value = args.iso;
-              const got = $(input).datepicker('getDate');
-              if (!got) return { ok: false, iso: '', error: 'no-getdate' };
-              const iso = got.getFullYear() + '-'
-                + String(got.getMonth() + 1).padStart(2, '0') + '-'
-                + String(got.getDate()).padStart(2, '0');
-              return { ok: iso === args.iso, iso, error: '' };
-            }
-            """,
-            new { iso = day.ToString("yyyy-MM-dd"), y = day.Year, m = day.Month, d = day.Day })
-            .ConfigureAwait(false);
-
-        return result ?? new DateApplyResult { Ok = false, Error = "no-datepicker" };
-    }
-
-    /// <summary>
-    /// Opens the visible date control and clicks the day link inside jQuery UI's popup.
-    /// </summary>
-    private static async Task TryClickDatepickerDayAsync(
-        IPage page,
-        DateOnly day,
-        CancellationToken cancellationToken)
-    {
-        var opener = page.Locator(".date-filter-container.desktop-only .single-date-filter-container").First;
-        if (!await opener.IsVisibleAsync().ConfigureAwait(false))
-        {
-            opener = page.Locator(".single-date-filter-container").First;
-        }
-
-        if (!await opener.IsVisibleAsync().ConfigureAwait(false))
-        {
-            return;
-        }
-
-        await ClickWithoutWaitingForNavigationAsync(opener).ConfigureAwait(false);
-
-        var picker = page.Locator("#ui-datepicker-div");
-        try
-        {
-            await picker.WaitForAsync(new LocatorWaitForOptions
-            {
-                State = WaitForSelectorState.Visible,
-                Timeout = 8_000
-            }).ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-            return;
-        }
-
-        var month = day.Month - 1;
-        var dayLink = picker.Locator(
-            $"td[data-handler='selectDay'][data-month='{month}'][data-year='{day.Year}'] a.ui-state-default");
-        for (var step = 0; step < 16 && !await dayLink.First.IsVisibleAsync().ConfigureAwait(false); step++)
-        {
-            var next = picker.Locator(".ui-datepicker-next");
-            if (!await next.IsVisibleAsync().ConfigureAwait(false))
-            {
-                break;
-            }
-
-            await ClickWithoutWaitingForNavigationAsync(next, 5_000).ConfigureAwait(false);
-        }
-
-        if (await dayLink.First.IsVisibleAsync().ConfigureAwait(false))
-        {
-            await ClickWithoutWaitingForNavigationAsync(dayLink.First).ConfigureAwait(false);
-            try
-            {
-                await picker.WaitForAsync(new LocatorWaitForOptions
-                {
-                    State = WaitForSelectorState.Hidden,
-                    Timeout = 5_000
-                }).ConfigureAwait(false);
-            }
-            catch (PlaywrightException)
-            {
-            }
-        }
-    }
-
-    /// <summary>
-    /// Opens <c>input.find-club</c> (Име на клуб), picks the row, then clicks the matching <c>a.club-card</c> so the schedule loads.
-    /// </summary>
-    private static async Task<bool> TryOpenVenueFromClubNameAsync(
-        IPage page,
-        string venueName,
-        CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var clubBox = page.Locator("input.find-club").First;
-        try
-        {
-            await clubBox.WaitForAsync(new LocatorWaitForOptions
-            {
-                State = WaitForSelectorState.Visible,
-                Timeout = 10_000
-            }).ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-            return false;
-        }
-
-        await ClickWithoutWaitingForNavigationAsync(clubBox).ConfigureAwait(false);
-
-        var popup = page.Locator(".dropdown-content-club-popup");
-        try
-        {
-            await popup.WaitForAsync(new LocatorWaitForOptions
-            {
-                State = WaitForSelectorState.Visible,
-                Timeout = 5_000
-            }).ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-            await page.EvaluateAsync(
-                """
-                () => {
-                  const input = document.querySelector('input.find-club');
-                  if (input) {
-                    input.focus();
-                    input.click();
-                  }
-                  const drop = document.querySelector('.dropdown-content-club-popup');
-                  if (drop) drop.style.display = 'block';
-                }
-                """).ConfigureAwait(false);
-        }
-
-        try
-        {
-            await clubBox.FillAsync(venueName, new LocatorFillOptions { Timeout = 5_000 }).ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-        }
-
-        var option = popup.Locator(".club-search[data-teren]")
-            .Filter(new LocatorFilterOptions { HasText = venueName.Trim() })
-            .First;
-        if (!await option.IsVisibleAsync().ConfigureAwait(false))
-        {
-            option = page.Locator(".club-search[data-teren]")
-                .Filter(new LocatorFilterOptions { HasText = venueName.Trim() })
-                .First;
-        }
-
-        if (!await option.IsVisibleAsync().ConfigureAwait(false))
-        {
-            return false;
-        }
-
-        await ClickWithoutWaitingForNavigationAsync(option).ConfigureAwait(false);
-        await WaitForSiteToRespondAsync(page, cancellationToken).ConfigureAwait(false);
-
-        var card = page.Locator("a.club-card")
-            .Filter(new LocatorFilterOptions { HasText = venueName.Trim() })
-            .First;
-        try
-        {
-            await card.WaitForAsync(new LocatorWaitForOptions
-            {
-                State = WaitForSelectorState.Visible,
-                Timeout = 15_000
-            }).ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-            return false;
-        }
-
-        await ClickWithoutWaitingForNavigationAsync(card).ConfigureAwait(false);
-        return true;
-    }
-
-    /// <summary>
-    /// Opens <c>div.secondary-filter-button.time.toclear_filters</c> and clicks the earliest hour in the GUI window.
-    /// </summary>
-    /// <returns>False when that dropdown has no hour inside the window.</returns>
-    private static async Task<bool> TrySelectHourFromTimeButtonAsync(
-        IPage page,
-        TimeWindow window,
-        CancellationToken cancellationToken)
-    {
-        var timeButton = page.Locator("div.secondary-filter-button.time.toclear_filters").First;
-        if (!await timeButton.IsVisibleAsync().ConfigureAwait(false))
-        {
-            timeButton = page.Locator("div.secondary-filter-button.time").First;
-        }
-
-        if (!await timeButton.IsVisibleAsync().ConfigureAwait(false))
-        {
-            return false;
-        }
-
-        await ClickWithoutWaitingForNavigationAsync(timeButton).ConfigureAwait(false);
-
-        var optionRoot = page.Locator("div.dropdown-options.time.toclear_filters, #hours_to_move");
-        try
-        {
-            await optionRoot.Locator(".hour-option").First.WaitForAsync(new LocatorWaitForOptions
-            {
-                State = WaitForSelectorState.Visible,
-                Timeout = 8_000
-            }).ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-            return false;
-        }
-
-        var rawHours = await page.EvaluateAsync<string[]>(
-            """
-            () => {
-              const roots = document.querySelectorAll('div.dropdown-options.time.toclear_filters, #hours_to_move, #hours_move_mobile');
-              const source = roots.length > 0 ? roots : [document];
-              const Options = [];
-              for (const root of source) {
-                for (const el of root.querySelectorAll('.hour-option, .option-drop, a, button, div')) {
-                  const text = (el.getAttribute('data') || el.textContent || '').replace(/\s+/g, ' ').trim();
-                  if (text) Options.push(text);
-                }
-              }
-              return Options;
-            }
-            """).ConfigureAwait(false);
-
-        var parsed = BookingSlotParser.ParseSelectableHours(rawHours ?? []);
-        if (parsed.Count == 0)
-        {
-            return false;
-        }
-
-        var chosen = BookingSlotParser.EarliestHourInWindow(window, parsed);
-        if (chosen is null)
-        {
-            return false;
-        }
-
-        var label = chosen.Value.ToString("HH:mm");
-        var option = optionRoot.Locator(".hour-option").Filter(new LocatorFilterOptions { HasText = label }).First;
-        if (!await option.IsVisibleAsync().ConfigureAwait(false))
-        {
-            option = page.Locator(".hour-option").Filter(new LocatorFilterOptions { HasText = label }).First;
-        }
-
-        if (!await option.IsVisibleAsync().ConfigureAwait(false))
-        {
-            return false;
-        }
-
-        await ClickWithoutWaitingForNavigationAsync(option).ConfigureAwait(false);
-        return await WaitForListingAfterCalendarAsync(page, cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Opens the clock dropdown and clicks a specific hour (ignores 0.00 / Изчисти).
-    /// </summary>
-    private static async Task<bool> TrySelectExactHourAsync(
-        IPage page,
-        TimeOnly hour,
-        CancellationToken cancellationToken)
-    {
-        var window = new TimeWindow(hour, hour);
-        return await TrySelectHourFromTimeButtonAsync(page, window, cancellationToken).ConfigureAwait(false);
-    }
-
+    /// <exception cref="SkipVenueException">The site is busy or the page has no court schedule.</exception>
     private static async Task<IReadOnlyList<AvailabilitySlot>> CollectVenueSlotsAsync(
         IPage page,
         Venue venue,
@@ -1194,47 +835,20 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         TimeWindow window,
         CancellationToken cancellationToken)
     {
-        var opened = await TryOpenVenueFromClubNameAsync(page, venue.Name, cancellationToken)
+        await GotoAndCheckBusyAsync(page, BuildClubUrl(venue.ClubSlug!, day), cancellationToken)
             .ConfigureAwait(false);
-        if (!opened)
-        {
-            return [];
-        }
-
-        await WaitForSiteToRespondAsync(page, CancellationToken.None).ConfigureAwait(false);
 
         try
         {
-            await page.WaitForURLAsync("**/club/**", new PageWaitForURLOptions { Timeout = 20_000 })
-                .ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-            if (!page.Url.Contains("/club", StringComparison.OrdinalIgnoreCase))
+            await page.Locator(".sport-facility .facility").First.WaitForAsync(new LocatorWaitForOptions
             {
-                return [];
-            }
+                State = WaitForSelectorState.Attached,
+                Timeout = 10_000
+            }).ConfigureAwait(false);
         }
-
-        if (await StillBusyAfterRetryAsync(page).ConfigureAwait(false))
+        catch (TimeoutException)
         {
-            await ReturnToClubsListingAsync(page).ConfigureAwait(false);
-            return [];
-        }
-
-        try
-        {
-            await page.Locator(".sport-facility .facility.active .facility-schedule .booking-slot").First
-                .WaitForAsync(new LocatorWaitForOptions
-                {
-                    State = WaitForSelectorState.Attached,
-                    Timeout = 15_000
-                }).ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-            throw new InvalidOperationException(
-                "The site layout changed: facility-schedule booking slots were not found.");
+            throw new SkipVenueException($"no court schedule on {page.Url}");
         }
 
         var rows = await page.EvaluateAsync<ScrapedSlot[]>(
@@ -1297,34 +911,44 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             }
         }
 
-        try
-        {
-            await ReturnToClubsListingAsync(page).ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-        }
-
         return list;
     }
 
-    private static async Task ReturnToClubsListingAsync(IPage page)
+    private async Task CaptureDiagnosticsAsync(string reason)
     {
-        try
+        if (_page is null)
         {
-            await page.GoBackAsync(new PageGoBackOptions { WaitUntil = WaitUntilState.DOMContentLoaded })
-                .ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-            await page.GotoAsync("https://clicktoplay.io/clubs/index.php", new PageGotoOptions
-            {
-                WaitUntil = WaitUntilState.DOMContentLoaded
-            }).ConfigureAwait(false);
+            return;
         }
 
-        await WaitForSiteToRespondAsync(page, CancellationToken.None).ConfigureAwait(false);
-        await WaitForClubsListingReadyAsync(page, CancellationToken.None).ConfigureAwait(false);
+        var dir = AppPaths.DiagnosticsDirectory();
+        var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+        await _page.ScreenshotAsync(new PageScreenshotOptions
+        {
+            Path = Path.Combine(dir, $"overlay-{stamp}.png")
+        }).ConfigureAwait(false);
+        var title = await _page.TitleAsync().ConfigureAwait(false);
+        await File.WriteAllTextAsync(
+            Path.Combine(dir, $"overlay-{stamp}.txt"),
+            $"url={_page.Url}{Environment.NewLine}title={title}{Environment.NewLine}reason={reason}{Environment.NewLine}").ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// After a click or form submit, wait for the document to load (not networkidle).
+    /// </summary>
+    private static async Task WaitForSiteToRespondAsync(IPage page, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            await page.WaitForLoadStateAsync(
+                    LoadState.DOMContentLoaded,
+                    new PageWaitForLoadStateOptions { Timeout = 15_000 })
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (IsPlaywrightFailure(ex))
+        {
+        }
     }
 
     private async Task DisposeBrowserCoreAsync()
@@ -1351,6 +975,11 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         _currentSport = null;
     }
 
+    /// <summary>
+    /// One club and day could not be read; the scan moves on.
+    /// </summary>
+    private sealed class SkipVenueException(string message) : Exception(message);
+
     private sealed class ScrapedVenue
     {
         [System.Text.Json.Serialization.JsonPropertyName("name")]
@@ -1358,6 +987,9 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
 
         [System.Text.Json.Serialization.JsonPropertyName("address")]
         public string Address { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("slug")]
+        public string Slug { get; set; } = string.Empty;
     }
 
     private sealed class ScrapedSlot
@@ -1379,17 +1011,5 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
 
         [System.Text.Json.Serialization.JsonPropertyName("currency")]
         public string Currency { get; set; } = string.Empty;
-    }
-
-    private sealed class DateApplyResult
-    {
-        [System.Text.Json.Serialization.JsonPropertyName("ok")]
-        public bool Ok { get; set; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("iso")]
-        public string Iso { get; set; } = string.Empty;
-
-        [System.Text.Json.Serialization.JsonPropertyName("error")]
-        public string Error { get; set; } = string.Empty;
     }
 }

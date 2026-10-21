@@ -63,7 +63,7 @@ public sealed class PlaywrightOverlayTarget : IOverlayTarget
                     new PageWaitForLoadStateOptions { Timeout = 15_000 })
                 .ConfigureAwait(false);
         }
-        catch (PlaywrightException)
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
         {
         }
     }
