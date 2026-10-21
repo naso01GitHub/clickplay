@@ -53,7 +53,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             _currentSport = null;
 
             await GotoHomeAndSettleAsync(_page).ConfigureAwait(false);
-            await RecoverSportsPanelAsync(cancellationToken).ConfigureAwait(false);
+            await TryRecoverSportsPanelAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -69,7 +69,10 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         {
             var page = RequirePage();
             await EnsureHomeAsync(page).ConfigureAwait(false);
-            await RecoverSportsPanelAsync(cancellationToken).ConfigureAwait(false);
+            if (!await TryRecoverSportsPanelAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException("The sports panel is not clickable. A diagnostic screenshot was saved.");
+            }
 
             var names = await page.EvaluateAsync<string[]>(
                 """
@@ -110,7 +113,10 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         {
             var page = RequirePage();
             await EnsureHomeAsync(page).ConfigureAwait(false);
-            await RecoverSportsPanelAsync(cancellationToken).ConfigureAwait(false);
+            if (!await TryRecoverSportsPanelAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException("The sports panel is not clickable. A diagnostic screenshot was saved.");
+            }
 
             var sportBox = page.Locator(".sport-container.index-sport-nav")
                 .Filter(new LocatorFilterOptions { HasText = sport.Name })
@@ -301,6 +307,11 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                     await SelectSportAsync(request.Sport, cancellationToken).ConfigureAwait(false);
                     await SelectCityAsync(request.Sport, request.City, cancellationToken).ConfigureAwait(false);
                 }
+                catch (InvalidOperationException ex) when (IsSkippableOpenFailure(ex))
+                {
+                    progress?.Report(ex.Message);
+                    return [];
+                }
                 finally
                 {
                     await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -313,6 +324,12 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             foreach (var day in SearchDatePlanner.Days(request.StartDate, request.DaysAhead))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (await StillBusyAfterRetryAsync(page).ConfigureAwait(false))
+                {
+                    progress?.Report($"Listing is busy on {day:yyyy-MM-dd}; next day.");
+                    continue;
+                }
+
                 var window = SearchDatePlanner.WindowFor(day, request.WeekdayWindow, request.WeekendWindow);
                 progress?.Report($"Selecting {day:yyyy-MM-dd} on the site calendar…");
                 if (!await SelectDayOnCalendarAsync(page, day, cancellationToken).ConfigureAwait(false))
@@ -335,6 +352,12 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                     cancellationToken.ThrowIfCancellationRequested();
 
                     progress?.Report($"Checking {venue.Name}, {day:yyyy-MM-dd}…");
+                    if (await StillBusyAfterRetryAsync(page).ConfigureAwait(false))
+                    {
+                        progress?.Report($"Listing is busy for {venue.Name}; next location.");
+                        continue;
+                    }
+
                     var found = await CollectVenueSlotsAsync(page, venue, day, window, cancellationToken)
                         .ConfigureAwait(false);
                     slots.AddRange(found);
@@ -413,22 +436,21 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     {
         await page.GotoAsync(HomeUrl, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded })
             .ConfigureAwait(false);
-        await ThrowIfSiteDatabaseBusyAsync(page).ConfigureAwait(false);
         await page.WaitForTimeoutAsync(2_000).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// clicktoplay.io PHP uses mysqli; when MySQL hits max_connections the HTML shows HY000/1040.
-    /// Retries while the listing page is still navigating (ContentAsync throws in that window).
+    /// True when visible page text shows MySQL <c>max_connections</c>. Scripts are ignored.
     /// </summary>
-    private static async Task ThrowIfSiteDatabaseBusyAsync(IPage page)
+    private static async Task<bool> IsSiteDatabaseBusyAsync(IPage page)
     {
-        string? html = null;
+        string? text = null;
         for (var attempt = 0; attempt < 10; attempt++)
         {
             try
             {
-                html = await page.ContentAsync().ConfigureAwait(false);
+                text = await page.EvaluateAsync<string>(
+                    "() => (document.body && document.body.innerText) || ''").ConfigureAwait(false);
                 break;
             }
             catch (PlaywrightException)
@@ -437,39 +459,51 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             }
         }
 
-        if (html is null)
+        if (string.IsNullOrEmpty(text))
         {
-            return;
+            return false;
         }
 
-        if (html.Contains("Too many connections", StringComparison.OrdinalIgnoreCase)
-            || html.Contains("HY000/1040", StringComparison.OrdinalIgnoreCase)
-            || html.Contains("mysqli_connect", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException(
-                "clicktoplay.io’s database is full (mysqli Too many connections). Stop searching and wait; this is their MySQL limit, not a ClickPlay bug.");
-        }
+        return text.Contains("Too many connections", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("HY000/1040", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task RecoverSportsPanelAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Waits 3 seconds and checks again. True only when the visible page is still busy.
+    /// </summary>
+    private static async Task<bool> StillBusyAfterRetryAsync(IPage page)
+    {
+        if (!await IsSiteDatabaseBusyAsync(page).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        await page.WaitForTimeoutAsync(3_000).ConfigureAwait(false);
+        return await IsSiteDatabaseBusyAsync(page).ConfigureAwait(false);
+    }
+
+    private static bool IsSkippableOpenFailure(InvalidOperationException ex) =>
+        ex.Message.Contains("sports panel is not clickable", StringComparison.OrdinalIgnoreCase)
+        || ex.Message.Contains("database is full", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Dismisses overlays and retries the sports bar. Returns false after a screenshot instead of throwing.
+    /// </summary>
+    private async Task<bool> TryRecoverSportsPanelAsync(CancellationToken cancellationToken)
     {
         var page = RequirePage();
         var target = new PlaywrightOverlayTarget(page);
-        await _overlayRecovery.RecoverAsync(target, cancellationToken).ConfigureAwait(false);
-
-        if (await target.IsSportsPanelInteractableAsync(cancellationToken).ConfigureAwait(false))
+        for (var attempt = 0; attempt < 3; attempt++)
         {
-            return;
-        }
-
-        await _overlayRecovery.RecoverAsync(target, cancellationToken).ConfigureAwait(false);
-        if (await target.IsSportsPanelInteractableAsync(cancellationToken).ConfigureAwait(false))
-        {
-            return;
+            await _overlayRecovery.RecoverAsync(target, cancellationToken).ConfigureAwait(false);
+            if (await target.IsSportsPanelInteractableAsync(cancellationToken).ConfigureAwait(false))
+            {
+                return true;
+            }
         }
 
         await CaptureDiagnosticsAsync("Sports panel still unresponsive after overlay recovery.").ConfigureAwait(false);
-        throw new InvalidOperationException("The sports panel is not clickable. A diagnostic screenshot was saved.");
+        return false;
     }
 
     private static async Task ClickReserveAsync(IPage page)
@@ -713,8 +747,6 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         catch (PlaywrightException)
         {
         }
-
-        await ThrowIfSiteDatabaseBusyAsync(page).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -738,9 +770,12 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         {
         }
 
-        var cards = await TryWaitForClubCardsAsync(page, 30_000).ConfigureAwait(false);
-        await ThrowIfSiteDatabaseBusyAsync(page).ConfigureAwait(false);
-        return cards;
+        if (await StillBusyAfterRetryAsync(page).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        return await TryWaitForClubCardsAsync(page, 30_000).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -800,7 +835,6 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         }
 
         await TryWaitForClubCardsAsync(page, 15_000).ConfigureAwait(false);
-        await ThrowIfSiteDatabaseBusyAsync(page).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1178,12 +1212,15 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         {
             if (!page.Url.Contains("/club", StringComparison.OrdinalIgnoreCase))
             {
-                await ThrowIfSiteDatabaseBusyAsync(page).ConfigureAwait(false);
                 return [];
             }
         }
 
-        await ThrowIfSiteDatabaseBusyAsync(page).ConfigureAwait(false);
+        if (await StillBusyAfterRetryAsync(page).ConfigureAwait(false))
+        {
+            await ReturnToClubsListingAsync(page).ConfigureAwait(false);
+            return [];
+        }
 
         try
         {
@@ -1262,6 +1299,19 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
 
         try
         {
+            await ReturnToClubsListingAsync(page).ConfigureAwait(false);
+        }
+        catch (PlaywrightException)
+        {
+        }
+
+        return list;
+    }
+
+    private static async Task ReturnToClubsListingAsync(IPage page)
+    {
+        try
+        {
             await page.GoBackAsync(new PageGoBackOptions { WaitUntil = WaitUntilState.DOMContentLoaded })
                 .ConfigureAwait(false);
         }
@@ -1275,8 +1325,6 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
 
         await WaitForSiteToRespondAsync(page, CancellationToken.None).ConfigureAwait(false);
         await WaitForClubsListingReadyAsync(page, CancellationToken.None).ConfigureAwait(false);
-
-        return list;
     }
 
     private async Task DisposeBrowserCoreAsync()

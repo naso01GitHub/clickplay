@@ -1,0 +1,51 @@
+Wait for web's responce after every click.
+
+
+When Application start:
+     1. Open web
+     2. Mainten "Bulgarian" language
+     3. Collect all "sports" from Sport bar.
+     4. Populate Sports drop down in GUI.
+     5. Close web page.
+When Sport from GUI is selected or changed:
+     1. Open web
+     2. Click on selected Sport
+     3. Collect all available Cities. 
+     4. Populate Cities drop-down in GIU
+     5. Show Cities drop-down
+     6. Close web.
+     
+When Sport and Cities in GUI are selected or changed:
+     1. Open web
+     2. Click on selected Sport
+     3. Click on selected City
+     4. On web calendar set tomorrow.
+     5. Collect all available locations. Can click "Име на клуб" and collect all from drop down, or scan sport cards.
+     5. Populate Locations drop-down in GUI
+     6. Show Locations in GUI.
+     7. Close web page.
+     8. Show Search button in GUI
+
+When Search is clicked  ( search loop):
+     1. Open web
+     2. Click on selected Sport
+     3. Click on selected City
+     4. Get first available location from web.
+     5. Check if this location is selected in GUI. If Yes, collect every `.booking-slot` that has class `itsfree`.
+     6. Get next location and reseat step 5.
+     7. Continue to all  available in web locations.
+     8. On web calandar, select next day.
+     9. Start from step 5.
+     10.Repeat steps 4 to 9 "Days ahead" times from GUI
+     11.Close web
+     12.Inspect all collected records. If record's time slot match the time slot in GUI, and it was not available in previous scan, show it in "Results" window.
+     13.Wait "Repeat (min)" minutes.
+     14.Start from step 1.
+
+When click on "Stop", exit from search loop.
+    
+     
+
+
+
+     
