@@ -28,7 +28,7 @@ One-time Chromium install after the first build (Windows PowerShell or Mac `pwsh
 pwsh src/ClickPlay.Core/bin/Debug/net10.0/playwright.ps1 install chromium
 ```
 
-No linter is configured.
+No linter is configured. Mac setup (tools, Chromium, standalone `osx-arm64`/`osx-x64` publish): [INSTALL-MAC.md](INSTALL-MAC.md).
 
 ## Architecture
 
