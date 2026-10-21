@@ -3,12 +3,12 @@ using Microsoft.Playwright;
 namespace ClickPlay.Core.Browser;
 
 /// <summary>
-/// Clicks a locator after scrolling it into view. No extra settle delay.
+/// Clicks a locator after scrolling it into view, then pauses so the site can catch up.
 /// </summary>
 internal static class HumanPointer
 {
     /// <summary>
-    /// Scrolls the target into view and clicks it.
+    /// Scrolls the target into view, clicks it, and waits 800ms.
     /// </summary>
     /// <example>
     /// <code>
@@ -28,5 +28,6 @@ internal static class HumanPointer
         await locator.ScrollIntoViewIfNeededAsync(new LocatorScrollIntoViewIfNeededOptions { Timeout = timeoutMs })
             .ConfigureAwait(false);
         await locator.ClickAsync(new LocatorClickOptions { Timeout = timeoutMs }).ConfigureAwait(false);
+        await page.WaitForTimeoutAsync(800).ConfigureAwait(false);
     }
 }

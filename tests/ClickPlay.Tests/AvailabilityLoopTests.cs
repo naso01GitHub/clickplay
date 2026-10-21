@@ -377,8 +377,12 @@ public sealed class AvailabilityLoopTests
         var search = vm.SearchCommand.ExecuteAsync(null);
         await WaitUntil(() => session.SearchCallCount >= 3 && vm.Results.Any(line => line.Contains("Amik Sport", StringComparison.Ordinal)));
         Assert.True(vm.IsSearching);
+        Assert.Contains(vm.Results, line => line.Contains("Search failed", StringComparison.Ordinal));
         Assert.Contains(vm.Results, line => line.Contains("18:00", StringComparison.Ordinal));
-        Assert.Contains("Amik Sport", File.ReadAllText(logPath), StringComparison.Ordinal);
+        var log = File.ReadAllText(logPath);
+        Assert.Contains("Amik Sport", log, StringComparison.Ordinal);
+        Assert.Contains("Search failed", log, StringComparison.Ordinal);
+        Assert.True(log.Split("Amik Sport", StringSplitOptions.None).Length - 1 >= 2);
 
         vm.StopCommand.Execute(null);
         await search;

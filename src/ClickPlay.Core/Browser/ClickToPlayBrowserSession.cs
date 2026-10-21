@@ -39,7 +39,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
             {
                 Headless = options.Headless,
-                SlowMo = 0
+                SlowMo = 800
             }).ConfigureAwait(false);
             _context = await _browser.NewContextAsync(new BrowserNewContextOptions
             {
@@ -419,10 +419,29 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
 
     /// <summary>
     /// clicktoplay.io PHP uses mysqli; when MySQL hits max_connections the HTML shows HY000/1040.
+    /// Retries while the listing page is still navigating (ContentAsync throws in that window).
     /// </summary>
     private static async Task ThrowIfSiteDatabaseBusyAsync(IPage page)
     {
-        var html = await page.ContentAsync().ConfigureAwait(false);
+        string? html = null;
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            try
+            {
+                html = await page.ContentAsync().ConfigureAwait(false);
+                break;
+            }
+            catch (PlaywrightException)
+            {
+                await page.WaitForTimeoutAsync(400).ConfigureAwait(false);
+            }
+        }
+
+        if (html is null)
+        {
+            return;
+        }
+
         if (html.Contains("Too many connections", StringComparison.OrdinalIgnoreCase)
             || html.Contains("HY000/1040", StringComparison.OrdinalIgnoreCase)
             || html.Contains("mysqli_connect", StringComparison.OrdinalIgnoreCase))
@@ -699,16 +718,80 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     }
 
     /// <summary>
-    /// After the datepicker <c>onSelect</c>, wait for club cards — do not use networkidle (it blocks the widget).
+    /// After the datepicker <c>onSelect</c>, wait until club cards exist. Does not wait for a full navigation
+    /// (that hangs listing AJAX). Returns false if cards never appear; does not throw on timeout.
     /// </summary>
-    private static async Task WaitForListingAfterCalendarAsync(IPage page, CancellationToken cancellationToken)
+    private static async Task<bool> WaitForListingAfterCalendarAsync(IPage page, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            await page.Locator("a.club-card").First.WaitForAsync(new LocatorWaitForOptions
+            await page.WaitForLoadStateAsync(
+                    LoadState.DOMContentLoaded,
+                    new PageWaitForLoadStateOptions { Timeout = 5_000 })
+                .ConfigureAwait(false);
+        }
+        catch (PlaywrightException)
+        {
+        }
+        catch (TimeoutException)
+        {
+        }
+
+        var cards = await TryWaitForClubCardsAsync(page, 30_000).ConfigureAwait(false);
+        await ThrowIfSiteDatabaseBusyAsync(page).ConfigureAwait(false);
+        return cards;
+    }
+
+    /// <summary>
+    /// Polls the DOM for <c>a.club-card</c> without waiting for Playwright navigation to finish.
+    /// </summary>
+    private static async Task<bool> TryWaitForClubCardsAsync(IPage page, int timeoutMs)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            try
             {
-                State = WaitForSelectorState.Attached,
+                var remaining = Math.Max(500, (int)(deadline - DateTime.UtcNow).TotalMilliseconds);
+                await page.WaitForFunctionAsync(
+                        "() => document.querySelectorAll('a.club-card').length > 0",
+                        null,
+                        new PageWaitForFunctionOptions { Timeout = Math.Min(remaining, 5_000) })
+                    .ConfigureAwait(false);
+                return true;
+            }
+            catch (TimeoutException)
+            {
+            }
+            catch (PlaywrightException)
+            {
+                await page.WaitForTimeoutAsync(400).ConfigureAwait(false);
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Clicks without blocking on a full page navigation (listing refresh is AJAX).
+    /// </summary>
+#pragma warning disable CS0612
+    private static Task ClickWithoutWaitingForNavigationAsync(ILocator locator, int timeoutMs = 10_000) =>
+        locator.ClickAsync(new LocatorClickOptions { Timeout = timeoutMs, NoWaitAfter = true });
+#pragma warning restore CS0612
+
+    /// <summary>
+    /// After leaving a club profile, wait until the clubs listing (name box and cards) is usable.
+    /// </summary>
+    private static async Task WaitForClubsListingReadyAsync(IPage page, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            await page.Locator("input.find-club").First.WaitForAsync(new LocatorWaitForOptions
+            {
+                State = WaitForSelectorState.Visible,
                 Timeout = 15_000
             }).ConfigureAwait(false);
         }
@@ -716,6 +799,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         {
         }
 
+        await TryWaitForClubCardsAsync(page, 15_000).ConfigureAwait(false);
         await ThrowIfSiteDatabaseBusyAsync(page).ConfigureAwait(false);
     }
 
@@ -752,8 +836,19 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                 $"The site calendar did not select {expected} (value is '{applied.Iso}').");
         }
 
-        await WaitForListingAfterCalendarAsync(page, cancellationToken).ConfigureAwait(false);
-        return true;
+        if (await WaitForListingAfterCalendarAsync(page, cancellationToken).ConfigureAwait(false))
+        {
+            return true;
+        }
+
+        await page.WaitForTimeoutAsync(1_000).ConfigureAwait(false);
+        applied = await TryApplyDatepickerApiAsync(page, day).ConfigureAwait(false);
+        if (applied.Error == "beyond-max" || !applied.Ok)
+        {
+            return false;
+        }
+
+        return await WaitForListingAfterCalendarAsync(page, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -823,7 +918,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             return;
         }
 
-        await opener.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
+        await ClickWithoutWaitingForNavigationAsync(opener).ConfigureAwait(false);
 
         var picker = page.Locator("#ui-datepicker-div");
         try
@@ -850,12 +945,12 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                 break;
             }
 
-            await next.ClickAsync(new LocatorClickOptions { Timeout = 5_000 }).ConfigureAwait(false);
+            await ClickWithoutWaitingForNavigationAsync(next, 5_000).ConfigureAwait(false);
         }
 
         if (await dayLink.First.IsVisibleAsync().ConfigureAwait(false))
         {
-            await dayLink.First.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
+            await ClickWithoutWaitingForNavigationAsync(dayLink.First).ConfigureAwait(false);
             try
             {
                 await picker.WaitForAsync(new LocatorWaitForOptions
@@ -893,7 +988,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             return false;
         }
 
-        await clubBox.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
+        await ClickWithoutWaitingForNavigationAsync(clubBox).ConfigureAwait(false);
 
         var popup = page.Locator(".dropdown-content-club-popup");
         try
@@ -943,7 +1038,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             return false;
         }
 
-        await option.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
+        await ClickWithoutWaitingForNavigationAsync(option).ConfigureAwait(false);
         await WaitForSiteToRespondAsync(page, cancellationToken).ConfigureAwait(false);
 
         var card = page.Locator("a.club-card")
@@ -962,7 +1057,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             return false;
         }
 
-        await card.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
+        await ClickWithoutWaitingForNavigationAsync(card).ConfigureAwait(false);
         return true;
     }
 
@@ -986,7 +1081,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             return false;
         }
 
-        await timeButton.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
+        await ClickWithoutWaitingForNavigationAsync(timeButton).ConfigureAwait(false);
 
         var optionRoot = page.Locator("div.dropdown-options.time.toclear_filters, #hours_to_move");
         try
@@ -1042,9 +1137,8 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             return false;
         }
 
-        await option.ClickAsync(new LocatorClickOptions { Timeout = 10_000 }).ConfigureAwait(false);
-        await WaitForListingAfterCalendarAsync(page, cancellationToken).ConfigureAwait(false);
-        return true;
+        await ClickWithoutWaitingForNavigationAsync(option).ConfigureAwait(false);
+        return await WaitForListingAfterCalendarAsync(page, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1180,18 +1274,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         }
 
         await WaitForSiteToRespondAsync(page, CancellationToken.None).ConfigureAwait(false);
-
-        try
-        {
-            await page.Locator("a.club-card").First.WaitForAsync(new LocatorWaitForOptions
-            {
-                State = WaitForSelectorState.Attached,
-                Timeout = 10_000
-            }).ConfigureAwait(false);
-        }
-        catch (PlaywrightException)
-        {
-        }
+        await WaitForClubsListingReadyAsync(page, CancellationToken.None).ConfigureAwait(false);
 
         return list;
     }

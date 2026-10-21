@@ -69,7 +69,7 @@ public partial class MainViewModel : ViewModelBase
     public Func<DateTime> ScanClock { get; set; } = () => DateTime.Now;
 
     /// <summary>
-    /// Results log on disk. Defaults to app-data <c>results-log.txt</c>. Tests can replace it.
+    /// Results log on disk. Defaults to <c>results-log.txt</c> next to the exe. Tests can replace it.
     /// </summary>
     public string ResultsLogPath { get; set; } = AppPaths.ResultsLogFile();
 
@@ -403,8 +403,9 @@ public partial class MainViewModel : ViewModelBase
                 }
                 catch (Exception ex)
                 {
-                    ResetResultsLog();
-                    StatusMessage = FormatSearchFailure(StatusMessage, ex);
+                    var failure = FormatSearchFailure(StatusMessage, ex);
+                    StatusMessage = failure;
+                    PublishSearchFailure(failure);
                     await CloseCatalogQuietlyAsync().ConfigureAwait(true);
                     await WaitBeforeNextSearchAsync(ReadWaitDuration(repeatMinutes), cancellationToken)
                         .ConfigureAwait(true);
@@ -677,23 +678,22 @@ public partial class MainViewModel : ViewModelBase
         return newCount;
     }
 
-    private void ResetResultsLog()
+    private void PublishSearchFailure(string failure)
     {
         _seenResultLines.Clear();
         Results.Clear();
-        try
+        var block = new List<string>
         {
-            var dir = Path.GetDirectoryName(ResultsLogPath);
-            if (!string.IsNullOrWhiteSpace(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
+            FormatScanStamp(ScanClock()),
+            failure,
+            string.Empty
+        };
+        foreach (var line in block)
+        {
+            Results.Add(line);
+        }
 
-            File.WriteAllText(ResultsLogPath, string.Empty);
-        }
-        catch
-        {
-        }
+        AppendResultsLog(block);
     }
 
     private void AppendResultsLog(IReadOnlyList<string> lines)

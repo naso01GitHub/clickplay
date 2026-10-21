@@ -24,7 +24,7 @@ public static class AppPaths
     }
 
     /// <summary>
-    /// Text file for the Results window log (app data, not the repo).
+    /// Text file next to the running exe. Created on first write; never deleted by Search.
     /// </summary>
     /// <example>
     /// <code>
@@ -33,9 +33,7 @@ public static class AppPaths
     /// </example>
     public static string ResultsLogFile()
     {
-        var dir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "ClickPlay");
+        var dir = AppContext.BaseDirectory;
         Directory.CreateDirectory(dir);
         return Path.Combine(dir, "results-log.txt");
     }
