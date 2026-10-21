@@ -54,6 +54,65 @@
             <Setter Property="ClipValueToMinMax" Value="True" />
             <Setter Property="HorizontalAlignment" Value="Left" />
         </Style>
+        <!-- Status banner at the top: icon + colored left edge + tinted background per StatusKind. -->
+        <Style Selector="Border.status">
+            <Setter Property="Padding" Value="12,8" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="BorderThickness" Value="5,1,1,1" />
+            <Setter Property="BorderBrush" Value="#64B5F6" />
+            <Setter Property="Background" Value="#2264B5F6" />
+        </Style>
+        <Style Selector="Border.status TextBlock.statusIcon">
+            <Setter Property="FontSize" Value="18" />
+            <Setter Property="Foreground" Value="#64B5F6" />
+        </Style>
+        <Style Selector="Border.status SelectableTextBlock.statusText">
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="Border.status.working">
+            <Setter Property="BorderBrush" Value="#90A4AE" />
+            <Setter Property="Background" Value="#2290A4AE" />
+        </Style>
+        <Style Selector="Border.status.working TextBlock.statusIcon">
+            <Setter Property="Foreground" Value="#B0BEC5" />
+        </Style>
+        <Style Selector="Border.status.success">
+            <Setter Property="BorderBrush" Value="#66BB6A" />
+            <Setter Property="Background" Value="#2866BB6A" />
+        </Style>
+        <Style Selector="Border.status.success TextBlock.statusIcon">
+            <Setter Property="Foreground" Value="#81C784" />
+        </Style>
+        <Style Selector="Border.status.success SelectableTextBlock.statusText">
+            <Setter Property="Foreground" Value="#C8E6C9" />
+        </Style>
+        <Style Selector="Border.status.warning">
+            <Setter Property="BorderBrush" Value="#FFB300" />
+            <Setter Property="Background" Value="#28FFB300" />
+        </Style>
+        <Style Selector="Border.status.warning TextBlock.statusIcon">
+            <Setter Property="Foreground" Value="#FFCA28" />
+        </Style>
+        <Style Selector="Border.status.warning SelectableTextBlock.statusText">
+            <Setter Property="Foreground" Value="#FFE082" />
+        </Style>
+        <Style Selector="Border.status.error">
+            <Setter Property="BorderBrush" Value="#EF5350" />
+            <Setter Property="Background" Value="#33EF5350" />
+        </Style>
+        <Style Selector="Border.status.error TextBlock.statusIcon">
+            <Setter Property="Foreground" Value="#FF8A80" />
+        </Style>
+        <Style Selector="Border.status.error SelectableTextBlock.statusText">
+            <Setter Property="Foreground" Value="#FFCDD2" />
+        </Style>
+
+        <!-- SMTP fields while Search runs: stars only, not editable. -->
+        <Style Selector="TextBox.locked">
+            <Setter Property="PasswordChar" Value="*" />
+            <Setter Property="IsReadOnly" Value="True" />
+        </Style>
         <Style Selector="TextBox.short">
             <Setter Property="MaxWidth" Value="88" />
             <Setter Property="MinWidth" Value="64" />
@@ -62,27 +121,66 @@
     </Window.Styles>
 
     <DockPanel Margin="12">
-        <TextBlock DockPanel.Dock="Top"
-                   Text="{Binding StatusMessage}"
-                   TextWrapping="Wrap"
-                   FontSize="12"
-                   Margin="0,0,0,8" />
+        <Border DockPanel.Dock="Top"
+                Classes="status"
+                Classes.error="{Binding StatusIsError}"
+                Classes.warning="{Binding StatusIsWarning}"
+                Classes.success="{Binding StatusIsSuccess}"
+                Classes.working="{Binding StatusIsWorking}"
+                Margin="0,0,0,10">
+            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                <TextBlock Grid.Column="0" Classes="statusIcon" Text="{Binding StatusIcon}" VerticalAlignment="Center" />
+                <SelectableTextBlock Grid.Column="1"
+                                     Classes="statusText"
+                                     Text="{Binding StatusMessage}"
+                                     TextWrapping="Wrap"
+                                     VerticalAlignment="Center" />
+            </Grid>
+        </Border>
 
         <StackPanel DockPanel.Dock="Bottom" Spacing="6" Margin="0,8,0,0">
-            <Expander Header="Email (SMTP) — stored later in app data, not in source">
-                <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="6" Margin="0,8,0,0">
+            <Expander Header="Email (SMTP) — password kept in the OS secure store"
+                      IsExpanded="{Binding IsMailExpanded}">
+                <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="6" Margin="0,8,0,0">
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="Host" VerticalAlignment="Center" />
-                    <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding SmtpHost}" />
+                    <Grid Grid.Row="0" Grid.Column="1" ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                        <TextBox Grid.Column="0" Text="{Binding SmtpHost}" Classes.locked="{Binding IsSearching}"
+                                 PlaceholderText="pick a provider or type any SMTP server" />
+                        <ComboBox Grid.Column="1"
+                                  Width="230"
+                                  ItemsSource="{Binding SmtpHostPresets}"
+                                  SelectedItem="{Binding SelectedSmtpPreset}"
+                                  PlaceholderText="Known providers"
+                                  IsEnabled="{Binding !IsSearching}"
+                                  ToolTip.Tip="{Binding SelectedSmtpPreset.Note, FallbackValue='Pick a provider to fill Host and Port'}" />
+                    </Grid>
                     <TextBlock Grid.Row="1" Grid.Column="0" Text="Port" VerticalAlignment="Center" />
-                    <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding SmtpPort}" Classes="short" />
+                    <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                        <TextBox Text="{Binding SmtpPort}" Classes="short" Classes.locked="{Binding IsSearching}" />
+                        <ComboBox Width="150"
+                                  ItemsSource="{Binding SmtpPortOptions}"
+                                  SelectedItem="{Binding SelectedSmtpPortOption}"
+                                  PlaceholderText="Ports"
+                                  IsEnabled="{Binding !IsSearching}" />
+                    </StackPanel>
                     <TextBlock Grid.Row="2" Grid.Column="0" Text="User" VerticalAlignment="Center" />
-                    <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding SmtpUser}" />
+                    <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding SmtpUser}" Classes.locked="{Binding IsSearching}" />
                     <TextBlock Grid.Row="3" Grid.Column="0" Text="Password" VerticalAlignment="Center" />
-                    <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding SmtpPassword}" PasswordChar="•" />
+                    <Grid Grid.Row="3" Grid.Column="1" ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                        <TextBox Grid.Column="0" Text="{Binding SmtpPassword}" PasswordChar="*" Classes.locked="{Binding IsSearching}" />
+                        <CheckBox Grid.Column="1"
+                                  Width="230"
+                                  Content="Remember login"
+                                  IsChecked="{Binding RememberLogin}"
+                                  ToolTip.Tip="Off: User and Password are not saved and start empty next time. Turning it off erases the saved login now." />
+                    </Grid>
                     <TextBlock Grid.Row="4" Grid.Column="0" Text="From" VerticalAlignment="Center" />
-                    <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding MailFrom}" />
-                    <TextBlock Grid.Row="5" Grid.Column="0" Text="To" VerticalAlignment="Top" Margin="0,6,0,0" />
-                    <TextBox Grid.Row="5"
+                    <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding MailFrom}" Classes.locked="{Binding IsSearching}" />
+                    <TextBlock Grid.Row="5" Grid.Column="0" Text="Subject" VerticalAlignment="Center" />
+                    <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding MailSubject}"
+                             PlaceholderText="mail subject = this text + location + time slot" />
+                    <TextBlock Grid.Row="6" Grid.Column="0" Text="To" VerticalAlignment="Top" Margin="0,6,0,0" />
+                    <TextBox Grid.Row="6"
                              Grid.Column="1"
                              Text="{Binding MailTo}"
                              AcceptsReturn="True"
@@ -199,7 +297,7 @@
                 </StackPanel>
             </StackPanel>
 
-            <DockPanel Grid.Row="2" IsVisible="{Binding IsLocationsVisible}">
+            <DockPanel Grid.Row="2" IsVisible="{Binding IsLocationsPanelVisible}">
                 <StackPanel DockPanel.Dock="Top"
                             Orientation="Horizontal"
                             Spacing="8"

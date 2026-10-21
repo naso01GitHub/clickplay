@@ -100,6 +100,14 @@ public sealed class MainViewModelCascadeTests
     }
 
     [Fact]
+    public void RepeatText_DefaultsToTwoMinutes()
+    {
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(new FakeClickToPlaySession()));
+
+        Assert.Equal("2", vm.RepeatText);
+    }
+
+    [Fact]
     public void RepeatText_KeepsDigitsAndCapsAtSixty()
     {
         var session = new FakeClickToPlaySession();

@@ -212,9 +212,9 @@ public sealed class AvailabilityLoopTests
     public void SearchFailure_IncludesStepAndExceptionType()
     {
         var line = MainViewModel.FormatSearchFailure(
-            "Checking Amik Sport, 2026-10-19…",
+            "Checking Amik Sport, 19.10.2026…",
             new InvalidOperationException("clicktoplay.io’s database is full"));
-        Assert.StartsWith("Search failed (Checking Amik Sport, 2026-10-19)", line);
+        Assert.StartsWith("Search failed (Checking Amik Sport, 19.10.2026)", line);
         Assert.Contains("InvalidOperationException", line, StringComparison.Ordinal);
         Assert.Contains("database is full", line, StringComparison.Ordinal);
     }
@@ -386,6 +386,88 @@ public sealed class AvailabilityLoopTests
 
         vm.StopCommand.Execute(null);
         await search;
+    }
+
+    [Fact]
+    public async Task Search_CalendarInPast_MovesToToday_ScanStartsToday()
+    {
+        var session = new FakeClickToPlaySession();
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
+        {
+            SearchLoopDelayOverride = TimeSpan.FromSeconds(30),
+            CalendarClock = () => new DateTime(2026, 10, 22, 9, 0, 0),
+            ResultsLogPath = TempLogPath(),
+            SelectedDate = new DateTime(2026, 10, 19),
+            DaysAheadText = "3"
+        };
+
+        var search = await StartSearchAsync(vm);
+        await WaitUntil(() => session.SearchCallCount >= 1);
+
+        Assert.Equal(new DateTime(2026, 10, 22), vm.SelectedDate);
+        Assert.Equal(new DateOnly(2026, 10, 22), session.LastSearchRequest!.StartDate);
+        Assert.Equal(3, session.LastSearchRequest.DaysAhead);
+
+        vm.StopCommand.Execute(null);
+        await search;
+    }
+
+    [Fact]
+    public async Task Search_CalendarInFuture_IsKept()
+    {
+        var session = new FakeClickToPlaySession();
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
+        {
+            SearchLoopDelayOverride = TimeSpan.FromSeconds(30),
+            CalendarClock = () => new DateTime(2026, 10, 22, 9, 0, 0),
+            ResultsLogPath = TempLogPath(),
+            SelectedDate = new DateTime(2026, 10, 25)
+        };
+
+        var search = await StartSearchAsync(vm);
+        await WaitUntil(() => session.SearchCallCount >= 1);
+
+        Assert.Equal(new DateTime(2026, 10, 25), vm.SelectedDate);
+        Assert.Equal(new DateOnly(2026, 10, 25), session.LastSearchRequest!.StartDate);
+
+        vm.StopCommand.Execute(null);
+        await search;
+    }
+
+    [Fact]
+    public async Task Search_PastMidnight_NextCycleStartsOnNewDay()
+    {
+        var session = new FakeClickToPlaySession();
+        var now = new DateTime(2026, 10, 22, 23, 59, 0);
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
+        {
+            SearchLoopDelayOverride = TimeSpan.FromMilliseconds(80),
+            CalendarClock = () => now,
+            ResultsLogPath = TempLogPath(),
+            SelectedDate = new DateTime(2026, 10, 22)
+        };
+
+        var search = await StartSearchAsync(vm);
+        await WaitUntil(() => session.SearchCallCount >= 1);
+        Assert.Equal(new DateOnly(2026, 10, 22), session.LastSearchRequest!.StartDate);
+
+        now = new DateTime(2026, 10, 23, 0, 1, 0);
+        await WaitUntil(() => session.LastSearchRequest!.StartDate == new DateOnly(2026, 10, 23));
+        Assert.Equal(new DateTime(2026, 10, 23), vm.SelectedDate);
+
+        vm.StopCommand.Execute(null);
+        await search;
+    }
+
+    private static async Task<Task> StartSearchAsync(MainViewModel vm)
+    {
+        await vm.LoadSportsCommand.ExecuteAsync(null);
+        vm.SelectedSport = vm.Sports[0];
+        await WaitUntil(() => vm.Cities.Count > 0);
+        vm.SelectedCity = vm.Cities[0];
+        await WaitUntil(() => vm.Locations.Count > 0);
+        vm.Locations[0].IsSelected = true;
+        return vm.SearchCommand.ExecuteAsync(null);
     }
 
     [Fact]

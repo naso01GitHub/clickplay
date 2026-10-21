@@ -32,7 +32,20 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     private bool? _startedHeadless;
     private Sport? _currentSport;
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Launches Chromium (headless or visible), opens the home page, and dismisses the language prompt.
+    /// Does nothing when a page with the same headless setting is already open.
+    /// </summary>
+    /// <param name="options">Launch flags; <c>Headless = false</c> shows the browser (GUI Debug).</param>
+    /// <param name="cancellationToken">Cancels waiting for the session gate and the busy-site retries.</param>
+    /// <returns>A task that completes when the home page is loaded.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
+    /// <exception cref="InvalidOperationException">clicktoplay.io keeps answering "Too many connections".</exception>
+    /// <example>
+    /// <code>
+    /// await session.StartAsync(new BrowserLaunchOptions(Headless: true), CancellationToken.None);
+    /// </code>
+    /// </example>
     public async Task StartAsync(BrowserLaunchOptions options, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -72,7 +85,19 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         }
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Reads the visible sport names from the home page sport bar.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels waiting for the session gate.</param>
+    /// <returns>Sports in site order, e.g. Тенис, Падел, …; never empty.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// The session is not started, the site is busy, the sport bar cannot be used, or no sport is visible.
+    /// </exception>
+    /// <example>
+    /// <code>
+    /// var sports = await session.GetSportsAsync(CancellationToken.None);
+    /// </code>
+    /// </example>
     public async Task<IReadOnlyList<Sport>> GetSportsAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -115,7 +140,21 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         }
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Clicks the sport on the sport bar, then Резервирай, opens the city popup, and reads the cities.
+    /// </summary>
+    /// <param name="sport">Sport to select, as returned by <see cref="GetSportsAsync"/>.</param>
+    /// <param name="cancellationToken">Cancels waiting for the session gate.</param>
+    /// <returns>Cities that offer this sport; never empty.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="sport"/> is null.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The site is busy, did not switch to the sport, or shows no cities (layout changed).
+    /// </exception>
+    /// <example>
+    /// <code>
+    /// var cities = await session.SelectSportAsync(new Sport("Падел"), CancellationToken.None);
+    /// </code>
+    /// </example>
     public async Task<IReadOnlyList<City>> SelectSportAsync(Sport sport, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(sport);
@@ -157,7 +196,21 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         }
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Reads the city id from the city popup, opens the city listing by URL (<see cref="BuildListingUrl"/>),
+    /// and reads the club cards with their club slugs. Selects the sport first when needed.
+    /// </summary>
+    /// <param name="sport">Selected sport.</param>
+    /// <param name="city">Selected city, as returned by <see cref="SelectSportAsync"/>.</param>
+    /// <param name="cancellationToken">Cancels waiting for the session gate and page loads.</param>
+    /// <returns>Locations with <see cref="Venue.ClubSlug"/> set; never empty.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="sport"/> or <paramref name="city"/> is null.</exception>
+    /// <exception cref="InvalidOperationException">The city is unknown or the listing shows no clubs.</exception>
+    /// <example>
+    /// <code>
+    /// var venues = await session.SelectCityAsync(new Sport("Падел"), new City("Варна"), CancellationToken.None);
+    /// </code>
+    /// </example>
     public async Task<IReadOnlyList<Venue>> SelectCityAsync(Sport sport, City city, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(sport);
@@ -234,11 +287,23 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         }
     }
 
-    /// <inheritdoc />
-    /// <remarks>
-    /// Opens <c>/club/?club={slug}&amp;date={yyyy-MM-dd}</c> for each selected location and day. A busy site,
-    /// a timeout, or a missing schedule skips that club and day; only a closed browser or Stop ends the scan.
-    /// </remarks>
+    /// <summary>
+    /// One scan: selects the sport if needed, then opens <c>/club/?club={slug}&amp;date={yyyy-MM-dd}</c> for each
+    /// selected location and each day, and collects free slots inside the weekday or weekend/holiday window.
+    /// A busy site, a timeout, or a missing schedule skips that club and day; only a closed browser or Stop ends the scan.
+    /// </summary>
+    /// <param name="request">Sport, city, selected locations, start date, days ahead, and the two time windows.</param>
+    /// <param name="progress">Receives status lines such as "Checking Supersport, 23.10.2026…"; may be null.</param>
+    /// <param name="cancellationToken">Stop button; cancels between clubs and during page loads.</param>
+    /// <returns>Free slots found in this scan (may be empty).</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="request"/> is null.</exception>
+    /// <exception cref="InvalidOperationException">No club schedule at all could be read, or the sport could not be selected.</exception>
+    /// <exception cref="OperationCanceledException">Stop was pressed.</exception>
+    /// <example>
+    /// <code>
+    /// var slots = await session.SearchAvailabilityAsync(request, new Progress&lt;string&gt;(Console.WriteLine), token);
+    /// </code>
+    /// </example>
     public async Task<IReadOnlyList<AvailabilitySlot>> SearchAvailabilityAsync(
         SearchRequest request,
         IProgress<string>? progress,
@@ -272,7 +337,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                     }
 
                     attempts++;
-                    progress?.Report($"Checking {venue.Name}, {day:yyyy-MM-dd}…");
+                    progress?.Report($"Checking {venue.Name}, {day:dd.MM.yyyy}…");
                     try
                     {
                         slots.AddRange(await CollectVenueSlotsAsync(page, venue, day, window, cancellationToken)
@@ -281,7 +346,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                     }
                     catch (Exception ex) when (IsSkippableVenueFailure(page, ex))
                     {
-                        lastSkip = $"Skipped {venue.Name}, {day:yyyy-MM-dd}: {FirstLine(ex.Message)}";
+                        lastSkip = $"Skipped {venue.Name}, {day:dd.MM.yyyy}: {FirstLine(ex.Message)}";
                         progress?.Report(lastSkip);
                     }
                 }
@@ -301,7 +366,16 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         }
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Closes the page, context, and browser, and releases Playwright. The session can be started again.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels waiting for the session gate.</param>
+    /// <returns>A task that completes when Chromium is closed.</returns>
+    /// <example>
+    /// <code>
+    /// await session.CloseBrowserAsync(CancellationToken.None);
+    /// </code>
+    /// </example>
     public async Task CloseBrowserAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -317,7 +391,15 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         }
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Closes the browser and disposes the session gate. The session cannot be used afterwards.
+    /// </summary>
+    /// <returns>A task that completes when everything is released.</returns>
+    /// <example>
+    /// <code>
+    /// await using var session = new ClickToPlayBrowserSession();
+    /// </code>
+    /// </example>
     public async ValueTask DisposeAsync()
     {
         await _gate.WaitAsync().ConfigureAwait(false);
@@ -377,6 +459,16 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         return $"{ClubProfileUrl}?club={Uri.EscapeDataString(clubSlug.Trim())}&date={day:yyyy-MM-dd}";
     }
 
+    /// <summary>
+    /// Returns the open page.
+    /// </summary>
+    /// <returns>The current Playwright page.</returns>
+    /// <exception cref="InvalidOperationException"><see cref="StartAsync"/> was not called, or the browser was closed.</exception>
+    /// <example>
+    /// <code>
+    /// var page = RequirePage();
+    /// </code>
+    /// </example>
     private IPage RequirePage()
     {
         if (_page is null)
@@ -387,26 +479,75 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         return _page;
     }
 
+    /// <summary>
+    /// True when this page session already has <paramref name="sport"/> selected on the site.
+    /// </summary>
+    /// <param name="sport">Sport to compare by name.</param>
+    /// <returns>True when the last successful sport click was for this sport.</returns>
+    /// <example>
+    /// <code>
+    /// if (!IsCurrentSport(request.Sport)) { await ClickSportOnHomeAsync(page, request.Sport, token); }
+    /// </code>
+    /// </example>
     private bool IsCurrentSport(Sport sport) =>
         _currentSport is not null && string.Equals(_currentSport.Name, sport.Name, StringComparison.Ordinal);
 
     /// <summary>
-    /// Playwright reports timeouts as <see cref="TimeoutException"/>, which is not a <see cref="PlaywrightException"/>.
+    /// True for any Playwright failure. Playwright reports timeouts as <see cref="TimeoutException"/>,
+    /// which is not a <see cref="PlaywrightException"/>, so both must be caught.
     /// </summary>
+    /// <param name="ex">Caught exception.</param>
+    /// <returns>True for <see cref="PlaywrightException"/> or <see cref="TimeoutException"/>.</returns>
+    /// <example>
+    /// <code>
+    /// catch (Exception ex) when (IsPlaywrightFailure(ex)) { }
+    /// </code>
+    /// </example>
     private static bool IsPlaywrightFailure(Exception ex) => ex is PlaywrightException or TimeoutException;
 
     /// <summary>
     /// A club/day problem the scan can step over. A closed page (user closed Chromium, browser crash) is not.
     /// </summary>
+    /// <param name="page">The scan page, checked for <see cref="IPage.IsClosed"/>.</param>
+    /// <param name="ex">Exception thrown while reading one club and day.</param>
+    /// <returns>True when the scan should skip this club/day and continue.</returns>
+    /// <example>
+    /// <code>
+    /// catch (Exception ex) when (IsSkippableVenueFailure(page, ex)) { progress?.Report("Skipped…"); }
+    /// </code>
+    /// </example>
     private static bool IsSkippableVenueFailure(IPage page, Exception ex) =>
         !page.IsClosed && (IsPlaywrightFailure(ex) || ex is SkipVenueException);
 
+    /// <summary>
+    /// First line of an exception message, cut to 140 characters, for one-line status text.
+    /// </summary>
+    /// <param name="message">Exception message; Playwright messages include a multi-line call log.</param>
+    /// <returns>The first line, at most 140 characters.</returns>
+    /// <example>
+    /// <code>
+    /// var line = FirstLine("Timeout 10000ms exceeded.\nCall log: …"); // "Timeout 10000ms exceeded."
+    /// </code>
+    /// </example>
     private static string FirstLine(string message)
     {
         var line = message.Split('\n', 2)[0].Trim();
         return line.Length > 140 ? line[..137] + "…" : line;
     }
 
+    /// <summary>
+    /// Makes sure the page shows a working home page: reloads it when the page is elsewhere
+    /// (clubs, a club profile, a language URL) or shows the MySQL busy page. Reloading clears the selected sport.
+    /// </summary>
+    /// <param name="page">The session page.</param>
+    /// <param name="cancellationToken">Cancels the busy-site retries.</param>
+    /// <returns>A task that completes when the home page is shown.</returns>
+    /// <exception cref="InvalidOperationException">The site stays busy after the retries.</exception>
+    /// <example>
+    /// <code>
+    /// await EnsureHomeAsync(page, cancellationToken);
+    /// </code>
+    /// </example>
     private async Task EnsureHomeAsync(IPage page, CancellationToken cancellationToken)
     {
         if (page.Url.StartsWith(HomeUrl, StringComparison.OrdinalIgnoreCase)
@@ -425,7 +566,20 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     /// <summary>
     /// On the home page, clicks the sport in the sport bar so the site stores it in the session
     /// (<c>ajax/set_sport.php</c>, cookie <c>selected_sport</c>). Club pages then show that sport's courts.
+    /// Confirms the cookie after each click and retries up to 3 times.
     /// </summary>
+    /// <param name="page">The session page.</param>
+    /// <param name="sport">Sport to select.</param>
+    /// <param name="cancellationToken">Cancels page loads and busy-site retries.</param>
+    /// <returns>A task that completes when the site has the sport selected.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// The sport bar cannot be used, the sport is not on the page, or the site did not switch after 3 clicks.
+    /// </exception>
+    /// <example>
+    /// <code>
+    /// await ClickSportOnHomeAsync(page, new Sport("Падел"), cancellationToken);
+    /// </code>
+    /// </example>
     private async Task ClickSportOnHomeAsync(IPage page, Sport sport, CancellationToken cancellationToken)
     {
         await EnsureHomeAsync(page, cancellationToken).ConfigureAwait(false);
@@ -478,8 +632,18 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
 
     /// <summary>
     /// Visible sport-bar box whose first text line is exactly the sport name
-    /// (so "Тенис" does not match "Тенис на маса").
+    /// (so "Тенис" does not match "Тенис на маса"). Works with both home-page layouts
+    /// (<c>.sport-container.index-sport-nav</c> and plain <c>.sport-container</c>).
     /// </summary>
+    /// <param name="page">The session page on the home page.</param>
+    /// <param name="sport">Sport to find by its exact Bulgarian name.</param>
+    /// <returns>Locator of the visible box (with a <c>data-id</c>), or null when the sport is not shown.</returns>
+    /// <example>
+    /// <code>
+    /// var box = await FindSportBoxAsync(page, new Sport("Падел"));
+    /// if (box is not null) await box.ClickAsync();
+    /// </code>
+    /// </example>
     private static async Task<ILocator?> FindSportBoxAsync(IPage page, Sport sport)
     {
         var id = await page.EvaluateAsync<string?>(
@@ -504,6 +668,15 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         return await box.IsVisibleAsync().ConfigureAwait(false) ? box : null;
     }
 
+    /// <summary>
+    /// Reads the site's <c>selected_sport</c> cookie (the <c>data-id</c> of the selected sport, e.g. 3 = Падел).
+    /// </summary>
+    /// <returns>The cookie value, or null when there is no browser context or no cookie.</returns>
+    /// <example>
+    /// <code>
+    /// var stored = await ReadSelectedSportCookieAsync(); // "3"
+    /// </code>
+    /// </example>
     private async Task<string?> ReadSelectedSportCookieAsync()
     {
         if (_context is null)
@@ -520,7 +693,15 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     /// Documented last-resort wait (not a generic sleep). If the site answers with its MySQL
     /// <c>Too many connections</c> page instead, reloads after 3, 6, and 12 seconds before giving up.
     /// </summary>
+    /// <param name="page">The session page.</param>
+    /// <param name="cancellationToken">Cancels the waits between busy-site retries.</param>
+    /// <returns>A task that completes 2 seconds after a working home page loaded.</returns>
     /// <exception cref="InvalidOperationException">The site is still busy after the retries.</exception>
+    /// <example>
+    /// <code>
+    /// await GotoHomeAndSettleAsync(page, cancellationToken);
+    /// </code>
+    /// </example>
     private static async Task GotoHomeAndSettleAsync(IPage page, CancellationToken cancellationToken)
     {
         await page.GotoAsync(HomeUrl, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded })
@@ -548,7 +729,16 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     /// <summary>
     /// Opens a URL. If the visible page shows MySQL <c>Too many connections</c>, waits 3 seconds and reloads once.
     /// </summary>
+    /// <param name="page">The session page.</param>
+    /// <param name="url">Absolute URL, e.g. from <see cref="BuildClubUrl"/>.</param>
+    /// <param name="cancellationToken">Cancels before loading and during the 3-second wait.</param>
+    /// <returns>A task that completes when the page loaded and is not busy.</returns>
     /// <exception cref="SkipVenueException">The page is still busy after the reload.</exception>
+    /// <example>
+    /// <code>
+    /// await GotoAndCheckBusyAsync(page, BuildClubUrl("supersport", day), cancellationToken);
+    /// </code>
+    /// </example>
     private static async Task GotoAndCheckBusyAsync(IPage page, string url, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -570,7 +760,15 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
 
     /// <summary>
     /// True when visible page text shows MySQL <c>max_connections</c>. Scripts are ignored.
+    /// Retries reading the text while the page is navigating.
     /// </summary>
+    /// <param name="page">Page to check.</param>
+    /// <returns>True when the visible text contains "Too many connections" or "HY000/1040".</returns>
+    /// <example>
+    /// <code>
+    /// if (await IsSiteDatabaseBusyAsync(page)) { /* wait and reload */ }
+    /// </code>
+    /// </example>
     private static async Task<bool> IsSiteDatabaseBusyAsync(IPage page)
     {
         string? text = null;
@@ -598,8 +796,15 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     }
 
     /// <summary>
-    /// Waits 3 seconds and checks again. True only when the visible page is still busy.
+    /// If the page is busy, waits 3 seconds, reloads, and checks again. True only when it is still busy.
     /// </summary>
+    /// <param name="page">Page to check and reload.</param>
+    /// <returns>False when the page is (or became) usable; true when it is still busy after the reload.</returns>
+    /// <example>
+    /// <code>
+    /// if (await StillBusyAfterRetryAsync(page)) throw new InvalidOperationException("busy");
+    /// </code>
+    /// </example>
     private static async Task<bool> StillBusyAfterRetryAsync(IPage page)
     {
         if (!await IsSiteDatabaseBusyAsync(page).ConfigureAwait(false))
@@ -614,8 +819,17 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     }
 
     /// <summary>
-    /// Dismisses overlays and retries the sports bar. Returns false after a screenshot instead of throwing.
+    /// Dismisses the language prompt (Български + Запази) and checks that the sports bar is usable, up to 3 times.
+    /// Returns false after saving a diagnostic screenshot instead of throwing.
     /// </summary>
+    /// <param name="cancellationToken">Cancels overlay recovery.</param>
+    /// <returns>True when the sports bar is usable; false after a diagnostic screenshot.</returns>
+    /// <exception cref="InvalidOperationException">The page is the site's MySQL busy page, not a real overlay problem.</exception>
+    /// <example>
+    /// <code>
+    /// if (!await TryRecoverSportsPanelAsync(cancellationToken)) throw new InvalidOperationException("…");
+    /// </code>
+    /// </example>
     private async Task<bool> TryRecoverSportsPanelAsync(CancellationToken cancellationToken)
     {
         var page = RequirePage();
@@ -638,6 +852,17 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         return false;
     }
 
+    /// <summary>
+    /// Clicks the Резервирай корт button (or the hero reservation button). If neither works,
+    /// opens <see cref="ClubsListingUrl"/> directly.
+    /// </summary>
+    /// <param name="page">The session page on the home page, with a sport selected.</param>
+    /// <returns>A task that completes when the clubs page is loading or loaded.</returns>
+    /// <example>
+    /// <code>
+    /// await ClickReserveAsync(page);
+    /// </code>
+    /// </example>
     private static async Task ClickReserveAsync(IPage page)
     {
         var reserve = page.GetByRole(AriaRole.Button, new PageGetByRoleOptions
@@ -682,6 +907,20 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         }
     }
 
+    /// <summary>
+    /// Waits for the <c>/clubs/</c> page (opens it if Резервирай did not), checks that it is not busy,
+    /// and opens the city popup.
+    /// </summary>
+    /// <param name="page">The session page after Резервирай.</param>
+    /// <returns>A task that completes when the city popup is open.</returns>
+    /// <exception cref="InvalidOperationException">The clubs page stays busy.</exception>
+    /// <exception cref="TimeoutException">The city popup did not appear.</exception>
+    /// <example>
+    /// <code>
+    /// await ClickReserveAsync(page);
+    /// await WaitForClubsPageAsync(page);
+    /// </code>
+    /// </example>
     private static async Task WaitForClubsPageAsync(IPage page)
     {
         try
@@ -710,7 +949,17 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
 
     /// <summary>
     /// Opens the city popup by clicking <c>.search-by-location</c> (the Град input alone does not open it).
+    /// Falls back to showing the popup by script, then waits for the city names.
     /// </summary>
+    /// <param name="page">The session page on <c>/clubs/</c>.</param>
+    /// <returns>A task that completes when <c>.city[data-city]</c> entries are in the page.</returns>
+    /// <exception cref="TimeoutException">The location box or the city list did not appear.</exception>
+    /// <example>
+    /// <code>
+    /// await OpenCityFilterAsync(page);
+    /// var cities = await ReadCitiesAsync(page);
+    /// </code>
+    /// </example>
     private static async Task OpenCityFilterAsync(IPage page)
     {
         var place = page.Locator(".search-by-location").First;
@@ -758,6 +1007,16 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         }).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Reads city names from the city popup (skips <c>data-city=cl</c>) and parses them with <see cref="CityNameParser"/>.
+    /// </summary>
+    /// <param name="page">The session page with the city popup open.</param>
+    /// <returns>Parsed cities; empty when the popup has none.</returns>
+    /// <example>
+    /// <code>
+    /// var cities = await ReadCitiesAsync(page); // Банско, Благоевград, Бургас, Варна, …
+    /// </code>
+    /// </example>
     private static async Task<IReadOnlyList<City>> ReadCitiesAsync(IPage page)
     {
         var names = await page.EvaluateAsync<string[]>(
@@ -774,6 +1033,17 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         return CityNameParser.Parse(names ?? []);
     }
 
+    /// <summary>
+    /// Scrolls to the bottom up to 8 times, until the page stops growing, so lazily loaded club cards appear.
+    /// </summary>
+    /// <param name="page">The session page on a city listing.</param>
+    /// <returns>A task that completes when scrolling no longer loads more content.</returns>
+    /// <example>
+    /// <code>
+    /// await ScrollToLoadAllAsync(page);
+    /// var venues = await ReadVenuesAsync(page);
+    /// </code>
+    /// </example>
     private static async Task ScrollToLoadAllAsync(IPage page)
     {
         for (var i = 0; i < 8; i++)
@@ -793,6 +1063,13 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     /// Reads club cards that link to a clicktoplay.io club profile, with the <c>club</c> slug from the link.
     /// Advert cards that link to other sites are skipped.
     /// </summary>
+    /// <param name="page">The session page on a city listing.</param>
+    /// <returns>Distinct venues by name, each with name, address, and club slug.</returns>
+    /// <example>
+    /// <code>
+    /// var venues = await ReadVenuesAsync(page); // Venue("Supersport", "Варна, …", "supersport"), …
+    /// </code>
+    /// </example>
     private static async Task<IReadOnlyList<Venue>> ReadVenuesAsync(IPage page)
     {
         var rows = await page.EvaluateAsync<ScrapedVenue[]>(
@@ -827,7 +1104,18 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     /// <summary>
     /// Opens the club profile for one day and reads every free <c>.booking-slot</c> inside the GUI window.
     /// </summary>
+    /// <param name="page">The session page.</param>
+    /// <param name="venue">Location to open; <see cref="Venue.ClubSlug"/> must be set.</param>
+    /// <param name="day">Schedule day; only slots whose <c>data-df</c> is this day are kept.</param>
+    /// <param name="window">Weekday or weekend/holiday window for this day; slot start must be inside it.</param>
+    /// <param name="cancellationToken">Cancels the page load.</param>
+    /// <returns>Free slots for this club and day inside the window (may be empty).</returns>
     /// <exception cref="SkipVenueException">The site is busy or the page has no court schedule.</exception>
+    /// <example>
+    /// <code>
+    /// var slots = await CollectVenueSlotsAsync(page, venue, new DateOnly(2026, 10, 23), window, cancellationToken);
+    /// </code>
+    /// </example>
     private static async Task<IReadOnlyList<AvailabilitySlot>> CollectVenueSlotsAsync(
         IPage page,
         Venue venue,
@@ -914,6 +1202,17 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         return list;
     }
 
+    /// <summary>
+    /// Saves a screenshot and a text file (URL, title, reason) to <see cref="AppPaths.DiagnosticsDirectory"/>.
+    /// Does nothing when no page is open.
+    /// </summary>
+    /// <param name="reason">Why the diagnostic is saved; written to the text file.</param>
+    /// <returns>A task that completes when both files are written.</returns>
+    /// <example>
+    /// <code>
+    /// await CaptureDiagnosticsAsync("No club cards on the city listing.");
+    /// </code>
+    /// </example>
     private async Task CaptureDiagnosticsAsync(string reason)
     {
         if (_page is null)
@@ -934,8 +1233,17 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     }
 
     /// <summary>
-    /// After a click or form submit, wait for the document to load (not networkidle).
+    /// After a click or form submit, wait for the document to load (not networkidle). A timeout is ignored.
     /// </summary>
+    /// <param name="page">The session page.</param>
+    /// <param name="cancellationToken">Checked before waiting.</param>
+    /// <returns>A task that completes when DOMContentLoaded fired or after 15 seconds.</returns>
+    /// <example>
+    /// <code>
+    /// await box.ClickAsync();
+    /// await WaitForSiteToRespondAsync(page, cancellationToken);
+    /// </code>
+    /// </example>
     private static async Task WaitForSiteToRespondAsync(IPage page, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -951,6 +1259,15 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
         }
     }
 
+    /// <summary>
+    /// Closes page, context, and browser (in that order) and clears the session state. Caller holds the gate.
+    /// </summary>
+    /// <returns>A task that completes when Chromium is closed.</returns>
+    /// <example>
+    /// <code>
+    /// await DisposeBrowserCoreAsync();
+    /// </code>
+    /// </example>
     private async Task DisposeBrowserCoreAsync()
     {
         if (_page is not null)
@@ -978,6 +1295,12 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     /// <summary>
     /// One club and day could not be read; the scan moves on.
     /// </summary>
+    /// <param name="message">Reason shown in the progress line, e.g. "clicktoplay.io is busy (Too many connections).".</param>
+    /// <example>
+    /// <code>
+    /// throw new SkipVenueException($"no court schedule on {page.Url}");
+    /// </code>
+    /// </example>
     private sealed class SkipVenueException(string message) : Exception(message);
 
     private sealed class ScrapedVenue

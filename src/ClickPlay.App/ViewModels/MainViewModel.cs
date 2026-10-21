@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using ClickPlay.Core.Browser;
+using ClickPlay.Core.Mail;
 using ClickPlay.Core.Models;
 using ClickPlay.Core.Services;
 using ClickPlay.Core.Validation;
@@ -11,17 +12,41 @@ namespace ClickPlay.App.ViewModels;
 public partial class MainViewModel : ViewModelBase
 {
     private readonly IClickToPlayCatalog _catalog;
+    private readonly IMailSender? _mailSender;
+    private readonly MailSettingsStore? _mailSettingsStore;
     private readonly HashSet<string> _seenResultLines = new(StringComparer.Ordinal);
     private CancellationTokenSource? _loadCts;
     private bool _suppressCityReload;
     private bool _suppressVenueReload;
 
-    public MainViewModel(IClickToPlayCatalog catalog)
+    /// <summary>
+    /// Creates the main window ViewModel.
+    /// </summary>
+    /// <param name="catalog">Site access.</param>
+    /// <param name="mailSender">Sends results mail; null disables mail.</param>
+    /// <param name="mailSettingsStore">Loads and saves the Email section; null keeps it in memory only.</param>
+    /// <example>
+    /// <code>
+    /// var vm = new MainViewModel(catalog, new MailKitMailSender(), new MailSettingsStore(new ProtectedSecretStore()));
+    /// </code>
+    /// </example>
+    public MainViewModel(
+        IClickToPlayCatalog catalog,
+        IMailSender? mailSender = null,
+        MailSettingsStore? mailSettingsStore = null)
     {
         _catalog = catalog;
+        _mailSender = mailSender;
+        _mailSettingsStore = mailSettingsStore;
         Sports.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsSportsVisible));
         Cities.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsCityVisible));
-        Locations.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IsLocationsVisible));
+        Locations.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(IsLocationsVisible));
+            OnPropertyChanged(nameof(IsLocationsPanelVisible));
+        };
+        LoadMailSettings();
+        SyncSmtpPicks();
     }
 
     public ObservableCollection<Sport> Sports { get; } = [];
@@ -56,7 +81,7 @@ public partial class MainViewModel : ViewModelBase
     /// Minutes to wait after closing the browser before the next search cycle. Digits only, 1–60.
     /// </summary>
     [ObservableProperty]
-    private string _repeatText = "1";
+    private string _repeatText = "2";
 
     /// <summary>
     /// Tests can shorten the wait between cycles.
@@ -67,6 +92,11 @@ public partial class MainViewModel : ViewModelBase
     /// Clock for Results scan stamps. Tests can replace it.
     /// </summary>
     public Func<DateTime> ScanClock { get; set; } = () => DateTime.Now;
+
+    /// <summary>
+    /// Clock for "today" when the calendar is moved forward before a search cycle. Tests can replace it.
+    /// </summary>
+    public Func<DateTime> CalendarClock { get; set; } = () => DateTime.Now;
 
     /// <summary>
     /// Results log on disk. Defaults to <c>results-log.txt</c> next to the exe. Tests can replace it.
@@ -135,6 +165,44 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     private string _statusMessage = "Load sports to begin.";
 
+    /// <summary>Banner style of <see cref="StatusMessage"/>.</summary>
+    public StatusKind StatusKind => StatusClassifier.Classify(StatusMessage);
+
+    /// <summary>Banner icon for <see cref="StatusMessage"/>.</summary>
+    public string StatusIcon => StatusClassifier.Icon(StatusKind);
+
+    /// <summary>True when the banner shows an error (red).</summary>
+    public bool StatusIsError => StatusKind == StatusKind.Error;
+
+    /// <summary>True when the banner shows a warning (amber).</summary>
+    public bool StatusIsWarning => StatusKind == StatusKind.Warning;
+
+    /// <summary>True when the banner shows a success (green).</summary>
+    public bool StatusIsSuccess => StatusKind == StatusKind.Success;
+
+    /// <summary>True when the banner shows work in progress (blue-grey).</summary>
+    public bool StatusIsWorking => StatusKind == StatusKind.Working;
+
+    /// <summary>
+    /// Called by CommunityToolkit when the status text changes; refreshes the banner style properties.
+    /// </summary>
+    /// <param name="value">New status text.</param>
+    /// <returns>No return value.</returns>
+    /// <example>
+    /// <code>
+    /// viewModel.StatusMessage = "Search failed (…)"; // StatusIsError becomes true
+    /// </code>
+    /// </example>
+    partial void OnStatusMessageChanged(string value)
+    {
+        OnPropertyChanged(nameof(StatusKind));
+        OnPropertyChanged(nameof(StatusIcon));
+        OnPropertyChanged(nameof(StatusIsError));
+        OnPropertyChanged(nameof(StatusIsWarning));
+        OnPropertyChanged(nameof(StatusIsSuccess));
+        OnPropertyChanged(nameof(StatusIsWorking));
+    }
+
     [ObservableProperty]
     private bool _isBusy;
 
@@ -147,11 +215,41 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     private string _smtpPort = "587";
 
+    /// <summary>Known mail providers for the Host drop-down (Gmail, Yahoo, …).</summary>
+    public IReadOnlyList<SmtpPreset> SmtpHostPresets => SmtpPresets.All;
+
+    /// <summary>
+    /// Provider picked in the Host drop-down. Picking one fills Host and its usual Port.
+    /// Follows the Host text: a typed known host selects its provider, any other host clears it.
+    /// </summary>
+    [ObservableProperty]
+    private SmtpPreset? _selectedSmtpPreset;
+
+    /// <summary>Port choices for the Port drop-down: the provider's ports, or common ports for other hosts.</summary>
+    public IReadOnlyList<SmtpPortOption> SmtpPortOptions => SmtpPresets.PortsFor(SmtpHost);
+
+    /// <summary>
+    /// Port picked in the Port drop-down. Picking one fills Port. Follows the Port text.
+    /// </summary>
+    [ObservableProperty]
+    private SmtpPortOption? _selectedSmtpPortOption;
+
+    private bool _syncingSmtpPicks;
+
     [ObservableProperty]
     private string _smtpUser = string.Empty;
 
     [ObservableProperty]
     private string _smtpPassword = string.Empty;
+
+    /// <summary>
+    /// "Remember login": when true, User and Password are saved and filled in at the next start.
+    /// Turning it off erases the saved login at once; the fields keep their values for this session.
+    /// </summary>
+    [ObservableProperty]
+    private bool _rememberLogin = true;
+
+    private bool _loadingMailSettings;
 
     [ObservableProperty]
     private string _mailFrom = string.Empty;
@@ -161,6 +259,13 @@ public partial class MainViewModel : ViewModelBase
     /// </summary>
     [ObservableProperty]
     private string _mailTo = string.Empty;
+
+    /// <summary>
+    /// Mail subject prefix. The sent subject is this text + location + time slot of the first new result.
+    /// Editable while Search runs; read when the mail is sent.
+    /// </summary>
+    [ObservableProperty]
+    private string _mailSubject = string.Empty;
 
     /// <summary>
     /// Parsed To recipients in order, one address per entry.
@@ -182,6 +287,145 @@ public partial class MainViewModel : ViewModelBase
     public bool IsCityVisible => Cities.Count > 0;
 
     public bool IsLocationsVisible => Locations.Count > 0;
+
+    /// <summary>
+    /// True while the Email (SMTP) expander is open.
+    /// </summary>
+    [ObservableProperty]
+    private bool _isMailExpanded;
+
+    /// <summary>
+    /// Locations list is shown when there are locations and the Email section is closed (they overlap otherwise).
+    /// </summary>
+    public bool IsLocationsPanelVisible => IsLocationsVisible && !IsMailExpanded;
+
+    /// <summary>
+    /// Called by CommunityToolkit when <see cref="IsMailExpanded"/> changes; refreshes <see cref="IsLocationsPanelVisible"/>.
+    /// </summary>
+    /// <param name="value">New expander state.</param>
+    /// <returns>No return value.</returns>
+    /// <example>
+    /// <code>
+    /// viewModel.IsMailExpanded = true; // Locations panel hides
+    /// </code>
+    /// </example>
+    partial void OnIsMailExpandedChanged(bool value) => OnPropertyChanged(nameof(IsLocationsPanelVisible));
+
+    /// <summary>
+    /// Called by CommunityToolkit when the Host text changes: refreshes the port choices and
+    /// selects the matching provider (or none) without overwriting what was typed.
+    /// </summary>
+    /// <param name="value">New Host text.</param>
+    /// <returns>No return value.</returns>
+    /// <example>
+    /// <code>
+    /// viewModel.SmtpHost = "smtp.gmail.com"; // SelectedSmtpPreset becomes Gmail
+    /// </code>
+    /// </example>
+    partial void OnSmtpHostChanged(string value)
+    {
+        OnPropertyChanged(nameof(SmtpPortOptions));
+        SyncSmtpPicks();
+    }
+
+    /// <summary>
+    /// Called by CommunityToolkit when the Port text changes: selects the matching port choice (or none).
+    /// </summary>
+    /// <param name="value">New Port text.</param>
+    /// <returns>No return value.</returns>
+    /// <example>
+    /// <code>
+    /// viewModel.SmtpPort = "465"; // SelectedSmtpPortOption becomes 465 (SSL)
+    /// </code>
+    /// </example>
+    partial void OnSmtpPortChanged(string value) => SyncSmtpPicks();
+
+    /// <summary>
+    /// Called by CommunityToolkit when "Remember login" changes. Turning it off saves at once, which erases
+    /// the stored User and Password; the fields keep their values so the current session still works.
+    /// </summary>
+    /// <param name="value">New checkbox state.</param>
+    /// <returns>No return value.</returns>
+    /// <example>
+    /// <code>
+    /// viewModel.RememberLogin = false; // saved login erased now; fields empty at the next start
+    /// </code>
+    /// </example>
+    partial void OnRememberLoginChanged(bool value)
+    {
+        if (_loadingMailSettings || value)
+        {
+            return;
+        }
+
+        SaveMailSettings();
+        StatusMessage = "Saved login erased. User and Password will be empty at the next start.";
+    }
+
+    /// <summary>
+    /// Called by CommunityToolkit when a provider is picked: fills Host and the provider's usual Port.
+    /// </summary>
+    /// <param name="value">Picked provider; null (cleared) changes nothing.</param>
+    /// <returns>No return value.</returns>
+    /// <example>
+    /// <code>
+    /// viewModel.SelectedSmtpPreset = SmtpPresets.FindByHost("smtp.mail.yahoo.com"); // Host + Port 465
+    /// </code>
+    /// </example>
+    partial void OnSelectedSmtpPresetChanged(SmtpPreset? value)
+    {
+        if (_syncingSmtpPicks || value is null)
+        {
+            return;
+        }
+
+        SmtpHost = value.Host;
+        SmtpPort = value.DefaultPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Called by CommunityToolkit when a port is picked: fills Port.
+    /// </summary>
+    /// <param name="value">Picked port; null (cleared) changes nothing.</param>
+    /// <returns>No return value.</returns>
+    /// <example>
+    /// <code>
+    /// viewModel.SelectedSmtpPortOption = viewModel.SmtpPortOptions[1]; // Port = 587
+    /// </code>
+    /// </example>
+    partial void OnSelectedSmtpPortOptionChanged(SmtpPortOption? value)
+    {
+        if (_syncingSmtpPicks || value is null)
+        {
+            return;
+        }
+
+        SmtpPort = value.Port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Sets both drop-downs to match the Host and Port text, without writing back to the text boxes.
+    /// </summary>
+    /// <returns>No return value.</returns>
+    /// <example>
+    /// <code>
+    /// SyncSmtpPicks(); // after loading saved settings
+    /// </code>
+    /// </example>
+    private void SyncSmtpPicks()
+    {
+        _syncingSmtpPicks = true;
+        try
+        {
+            SelectedSmtpPreset = SmtpPresets.FindByHost(SmtpHost);
+            var port = int.TryParse(SmtpPort?.Trim(), out var p) ? p : -1;
+            SelectedSmtpPortOption = SmtpPortOptions.FirstOrDefault(o => o.Port == port);
+        }
+        finally
+        {
+            _syncingSmtpPicks = false;
+        }
+    }
 
     public bool CanSearch =>
         !IsBusy
@@ -351,6 +595,15 @@ public partial class MainViewModel : ViewModelBase
             return;
         }
 
+        SmtpSettings? smtp = null;
+        if (SmtpSettingsValidator.IsConfigured(SmtpHost)
+            && !SmtpSettingsValidator.TryCreate(SmtpHost, SmtpPort, SmtpUser, SmtpPassword, MailFrom, out smtp, out var smtpError))
+        {
+            StatusMessage = $"Email: {smtpError}";
+            return;
+        }
+
+        SaveMailSettings();
         var sport = SelectedSport;
         var city = SelectedCity;
         var cancellationToken = ResetLoadToken();
@@ -373,6 +626,7 @@ public partial class MainViewModel : ViewModelBase
                         continue;
                     }
 
+                    AdvanceCalendarToToday();
                     if (!TryReadSearchCycle(sport, city, cycleLocations, out var request, out var cycleError))
                     {
                         StatusMessage = cycleError;
@@ -386,13 +640,14 @@ public partial class MainViewModel : ViewModelBase
                     var slots = await _catalog.SearchAvailabilityAsync(request, progress, cancellationToken)
                         .ConfigureAwait(true);
 
-                    var newCount = PublishNewResults(slots);
-                    StatusMessage = newCount == 0
+                    var newSlots = PublishNewResults(slots);
+                    StatusMessage = newSlots.Count == 0
                         ? (slots.Count == 0
                             ? "No free hours found. Closing browser…"
                             : "No new free hours. Closing browser…")
-                        : $"Found {newCount} new free hour(s). Closing browser…";
+                        : $"Found {newSlots.Count} new free hour(s). Closing browser…";
                     await _catalog.CloseBrowserAsync(cancellationToken).ConfigureAwait(true);
+                    await MailNewResultsAsync(smtp, newSlots, cancellationToken).ConfigureAwait(true);
 
                     await WaitBeforeNextSearchAsync(ReadWaitDuration(repeatMinutes), cancellationToken)
                         .ConfigureAwait(true);
@@ -511,6 +766,26 @@ public partial class MainViewModel : ViewModelBase
             await CloseCatalogQuietlyAsync().ConfigureAwait(true);
             IsBusy = false;
             OnPropertyChanged(nameof(CanSearch));
+        }
+    }
+
+    /// <summary>
+    /// Before each search cycle: if the GUI calendar date is before today (e.g. Search ran past midnight),
+    /// moves the calendar to today, so the scan never starts on a past day. A future date is kept.
+    /// </summary>
+    /// <returns>No return value.</returns>
+    /// <example>
+    /// <code>
+    /// AdvanceCalendarToToday();
+    /// TryReadSearchCycle(sport, city, locations, out var request, out var error); // starts today or later
+    /// </code>
+    /// </example>
+    private void AdvanceCalendarToToday()
+    {
+        var today = CalendarClock().Date;
+        if (SelectedDate is null || SelectedDate.Value.Date < today)
+        {
+            SelectedDate = today;
         }
     }
 
@@ -656,11 +931,22 @@ public partial class MainViewModel : ViewModelBase
     public static string FormatScanStamp(DateTime when) =>
         when.ToString("dd.MM.yyyy HH:mm:ss");
 
-    private int PublishNewResults(IReadOnlyList<AvailabilitySlot> slots)
+    /// <summary>
+    /// Adds a scan block to Results and results-log: the scan stamp, every slot not shown in an earlier scan, and an empty line.
+    /// </summary>
+    /// <param name="slots">All free slots found in this scan.</param>
+    /// <returns>Only the slots that are new in this scan (used for the mail).</returns>
+    /// <example>
+    /// <code>
+    /// var newSlots = PublishNewResults(slots);
+    /// await MailNewResultsAsync(smtp, newSlots, cancellationToken);
+    /// </code>
+    /// </example>
+    private List<AvailabilitySlot> PublishNewResults(IReadOnlyList<AvailabilitySlot> slots)
     {
         var block = new List<string> { FormatScanStamp(ScanClock()) };
         Results.Add(block[0]);
-        var newCount = 0;
+        var newSlots = new List<AvailabilitySlot>();
         foreach (var slot in slots)
         {
             var line = slot.ToLogLine();
@@ -668,14 +954,147 @@ public partial class MainViewModel : ViewModelBase
             {
                 Results.Add(line);
                 block.Add(line);
-                newCount++;
+                newSlots.Add(slot);
             }
         }
 
         Results.Add(string.Empty);
         block.Add(string.Empty);
         AppendResultsLog(block);
-        return newCount;
+        return newSlots;
+    }
+
+    /// <summary>
+    /// After a scan with new Results records, sends one mail with all of them to every To address.
+    /// To and Subject are read now, so edits made during Search apply. A mail failure never stops Search.
+    /// Adds a "Mailed …", "Mail skipped …", or "Mail failed …" line to Results and results-log.
+    /// </summary>
+    /// <param name="smtp">SMTP settings snapshotted when Search started; null means mail is off.</param>
+    /// <param name="newSlots">New slots of this scan; nothing is sent when empty.</param>
+    /// <param name="cancellationToken">Stop button; cancels sending.</param>
+    /// <returns>A task that completes when the mail was sent, skipped, or failed.</returns>
+    /// <exception cref="OperationCanceledException">Stop was pressed while sending.</exception>
+    /// <example>
+    /// <code>
+    /// await MailNewResultsAsync(smtp, newSlots, cancellationToken);
+    /// </code>
+    /// </example>
+    private async Task MailNewResultsAsync(
+        SmtpSettings? smtp,
+        IReadOnlyList<AvailabilitySlot> newSlots,
+        CancellationToken cancellationToken)
+    {
+        if (smtp is null || _mailSender is null || newSlots.Count == 0)
+        {
+            return;
+        }
+
+        var recipients = MailRecipients;
+        string note;
+        if (recipients.Count == 0)
+        {
+            note = "Mail skipped: no To address.";
+        }
+        else
+        {
+            StatusMessage = $"Mailing {newSlots.Count} new free hour(s)…";
+            try
+            {
+                await _mailSender.SendAsync(
+                        smtp,
+                        recipients,
+                        ResultsMailFormatter.Subject(MailSubject, newSlots),
+                        ResultsMailFormatter.Body(FormatScanStamp(ScanClock()), newSlots),
+                        cancellationToken)
+                    .ConfigureAwait(true);
+                note = $"Mailed {newSlots.Count} new free hour(s) to {recipients.Count} address(es).";
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                note = $"Mail failed: {ex.GetType().Name}: {ex.Message}";
+            }
+        }
+
+        StatusMessage = note;
+        var line = $"{FormatScanStamp(ScanClock())} {note}";
+        if (Results.Count > 0 && Results[^1].Length == 0)
+        {
+            Results.Insert(Results.Count - 1, line);
+        }
+        else
+        {
+            Results.Add(line);
+        }
+
+        AppendResultsLog([line, string.Empty]);
+    }
+
+    /// <summary>
+    /// Fills the Email fields (Host, Port, User, Password, From, To, Subject) from the saved settings.
+    /// Does nothing when no settings store was given.
+    /// </summary>
+    /// <returns>No return value.</returns>
+    /// <example>
+    /// <code>
+    /// // Called once from the constructor.
+    /// LoadMailSettings();
+    /// </code>
+    /// </example>
+    private void LoadMailSettings()
+    {
+        if (_mailSettingsStore is null)
+        {
+            return;
+        }
+
+        var saved = _mailSettingsStore.Load();
+        _loadingMailSettings = true;
+        try
+        {
+            SmtpHost = saved.Host;
+            SmtpPort = saved.Port;
+            SmtpUser = saved.User;
+            SmtpPassword = saved.Password;
+            MailFrom = saved.From;
+            MailTo = saved.To;
+            MailSubject = saved.Subject;
+            RememberLogin = saved.RememberLogin;
+        }
+        finally
+        {
+            _loadingMailSettings = false;
+        }
+    }
+
+    /// <summary>
+    /// Saves the Email section: the password to the OS secure store, the rest to <c>smtp.settings.json</c>.
+    /// Called when Search starts and when the app exits.
+    /// </summary>
+    /// <example>
+    /// <code>
+    /// viewModel.SaveMailSettings();
+    /// </code>
+    /// </example>
+    public void SaveMailSettings()
+    {
+        if (_mailSettingsStore is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _mailSettingsStore.Save(new MailSettings(
+                SmtpHost, SmtpPort, SmtpUser, SmtpPassword, MailFrom, MailTo, MailSubject, RememberLogin));
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Could not save email settings: {ex.Message}";
+        }
     }
 
     private void PublishSearchFailure(string failure)

@@ -53,9 +53,9 @@ The browser is **not** long-lived: the ViewModel calls `StartAsync` → one oper
 - `Validation/SearchInputValidator` (days ahead, repeat minutes, time windows) and `EmailRecipientParser` (one address per line).
 - `Browser/AppPaths` — diagnostics screenshots go to `%AppData%/ClickPlay/diagnostics` (cross-platform `ApplicationData`); the results log is `results-log.txt` next to the executable.
 
-### State of mail
+### Mail
 
-The UI collects `MailTo` recipients and parses them, but there is no SMTP sender in the codebase yet. If adding one, keep it in Core behind an interface (MailKit per AGENTS.md), keep settings in a gitignored `smtp.settings.json`, and mock it in tests.
+`Core/Mail`: `IMailSender` → `MailKitMailSender`; `ResultsMailFormatter` builds subject/body; `SmtpSettingsValidator` checks the GUI fields; `MailSettingsStore` saves non-secret fields to `%AppData%/ClickPlay/smtp.settings.json` and the password via `ISecretStore` → `ProtectedSecretStore` (MSAL extensions storage: DPAPI file on Windows, Keychain on Mac). `MainViewModel.Search` validates and snapshots SMTP at start, then calls `MailNewResultsAsync` after each scan that adds new Results; To/Subject are read at send time. Tests use `Fakes/FakeMailSender` and `Fakes/FakeSecretStore`.
 
 ### Testing pattern
 

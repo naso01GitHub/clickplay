@@ -24,6 +24,23 @@ public static class AppPaths
     }
 
     /// <summary>
+    /// Per-user settings folder (<c>%AppData%/ClickPlay</c> on Windows, <c>~/.config/ClickPlay</c> on Mac).
+    /// </summary>
+    /// <example>
+    /// <code>
+    /// var dir = AppPaths.SettingsDirectory();
+    /// </code>
+    /// </example>
+    public static string SettingsDirectory()
+    {
+        var dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "ClickPlay");
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    /// <summary>
     /// Text file next to the running exe. Created on first write; never deleted by Search.
     /// </summary>
     /// <example>
