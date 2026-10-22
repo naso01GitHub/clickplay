@@ -5,6 +5,7 @@ using ClickPlay.App.Platform;
 using ClickPlay.App.ViewModels;
 using ClickPlay.App.Views;
 using ClickPlay.Core.Browser;
+using ClickPlay.Core.Logging;
 using ClickPlay.Core.Mail;
 using ClickPlay.Core.Services;
 
@@ -31,7 +32,7 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Creates the browser session, mail sender, and settings store, builds <see cref="MainViewModel"/>,
+    /// Deletes a week-old errors log, creates the browser session, mail sender, and settings store, builds <see cref="MainViewModel"/>,
     /// shows the main window, and hooks app exit.
     /// </summary>
     /// <returns>No return value.</returns>
@@ -44,6 +45,7 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            new ErrorLog(AppPaths.ErrorsLogFile()).DeleteIfExpired();
             _session = new ClickToPlayBrowserSession();
             _viewModel = new MainViewModel(
                 new PlaywrightClickToPlayCatalog(_session),

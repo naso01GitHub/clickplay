@@ -71,7 +71,7 @@ public partial class MainViewModel
     private string _mailTo = string.Empty;
 
     /// <summary>
-    /// Mail subject prefix. The sent subject is this text + location + time slot of the first new result.
+    /// Mail subject prefix. The sent subject is this text + the selected sport + the number of records in the mail, e.g. "Free padel Падел (3)".
     /// Editable while Search runs; read when the mail is sent.
     /// </summary>
     [ObservableProperty]
@@ -203,20 +203,22 @@ public partial class MainViewModel
     /// <summary>
     /// After a scan with new Results records, sends one mail with all of them to every To address.
     /// To and Subject are read now, so edits made during Search apply. A mail failure never stops Search.
-    /// Adds a "Mailed …", "Mail skipped …", or "Mail failed …" line to Results and results-log.
+    /// Adds a "Mailed …", "Mail skipped …", or "Mail failed …" line to Results; a failure also goes to the errors log.
     /// </summary>
     /// <param name="smtp">SMTP settings snapshotted when Search started; null means mail is off.</param>
+    /// <param name="sport">Sport the Search runs for; goes into the subject.</param>
     /// <param name="newSlots">New slots of this scan; nothing is sent when empty.</param>
     /// <param name="cancellationToken">Stop button; cancels sending.</param>
     /// <returns>A task that completes when the mail was sent, skipped, or failed.</returns>
     /// <exception cref="OperationCanceledException">Stop was pressed while sending.</exception>
     /// <example>
     /// <code>
-    /// await MailNewResultsAsync(smtp, newSlots, cancellationToken);
+    /// await MailNewResultsAsync(smtp, sport, newSlots, cancellationToken);
     /// </code>
     /// </example>
     private async Task MailNewResultsAsync(
         SmtpSettings? smtp,
+        Sport sport,
         IReadOnlyList<AvailabilitySlot> newSlots,
         CancellationToken cancellationToken)
     {
@@ -227,6 +229,7 @@ public partial class MainViewModel
 
         var recipients = MailRecipients;
         string note;
+        var failed = false;
         if (recipients.Count == 0)
         {
             note = "Mail skipped: no To address.";
@@ -239,7 +242,7 @@ public partial class MainViewModel
                 await _mailSender.SendAsync(
                         smtp,
                         recipients,
-                        ResultsMailFormatter.Subject(MailSubject, newSlots),
+                        ResultsMailFormatter.Subject(MailSubject, sport.Name, newSlots.Count),
                         ResultsMailFormatter.Body(FormatScanStamp(ScanClock()), newSlots),
                         cancellationToken)
                     .ConfigureAwait(true);
@@ -252,6 +255,7 @@ public partial class MainViewModel
             catch (Exception ex)
             {
                 note = $"Mail failed: {ex.GetType().Name}: {ex.Message}";
+                failed = true;
             }
         }
 
@@ -266,7 +270,10 @@ public partial class MainViewModel
             Results.Add(line);
         }
 
-        AppendResultsLog([line, string.Empty]);
+        if (failed)
+        {
+            LogError(note);
+        }
     }
 
     /// <summary>
@@ -330,6 +337,7 @@ public partial class MainViewModel
         catch (Exception ex)
         {
             StatusMessage = $"Could not save email settings: {ex.Message}";
+            LogError(StatusMessage);
         }
     }
 }

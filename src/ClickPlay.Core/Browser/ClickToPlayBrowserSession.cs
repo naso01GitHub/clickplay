@@ -295,16 +295,16 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
     /// <param name="request">Sport, city, selected locations, start date, days ahead, and the two time windows.</param>
     /// <param name="progress">Receives status lines such as "Checking Supersport, 23.10.2026…"; may be null.</param>
     /// <param name="cancellationToken">Stop button; cancels between clubs and during page loads.</param>
-    /// <returns>Free slots found in this scan (may be empty).</returns>
+    /// <returns>Free slots found in this scan (may be empty), plus every location/day that was skipped.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="request"/> is null.</exception>
     /// <exception cref="InvalidOperationException">No club schedule at all could be read, or the sport could not be selected.</exception>
     /// <exception cref="OperationCanceledException">Stop was pressed.</exception>
     /// <example>
     /// <code>
-    /// var slots = await session.SearchAvailabilityAsync(request, new Progress&lt;string&gt;(Console.WriteLine), token);
+    /// var scan = await session.SearchAvailabilityAsync(request, new Progress&lt;string&gt;(Console.WriteLine), token);
     /// </code>
     /// </example>
-    public async Task<IReadOnlyList<AvailabilitySlot>> SearchAvailabilityAsync(
+    public async Task<AvailabilityScan> SearchAvailabilityAsync(
         SearchRequest request,
         IProgress<string>? progress,
         CancellationToken cancellationToken)
@@ -321,6 +321,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
             }
 
             var slots = new List<AvailabilitySlot>();
+            var skipped = new List<VenueDay>();
             var attempts = 0;
             var schedulesRead = 0;
             string? lastSkip = null;
@@ -333,6 +334,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                     if (string.IsNullOrWhiteSpace(venue.ClubSlug))
                     {
                         progress?.Report($"{venue.Name} has no club link; reload the locations.");
+                        skipped.Add(new VenueDay(venue.Name, day));
                         continue;
                     }
 
@@ -348,6 +350,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                     {
                         lastSkip = $"Skipped {venue.Name}, {day:dd.MM.yyyy}: {FirstLine(ex.Message)}";
                         progress?.Report(lastSkip);
+                        skipped.Add(new VenueDay(venue.Name, day));
                     }
                 }
             }
@@ -358,7 +361,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                     $"No club schedule could be read in this scan. Last: {lastSkip}");
             }
 
-            return slots;
+            return new AvailabilityScan(slots, skipped);
         }
         finally
         {

@@ -51,7 +51,7 @@ The browser is **not** long-lived: the ViewModel calls `StartAsync` → one oper
 - `Browser/HumanPointer` — stepped mouse movement for "click like a person".
 - `Calendar/BulgarianHolidayCalendar`, `SearchDatePlanner`, `ListingTimePlanner` — weekday vs weekend/holiday window selection, the days-ahead date list, and the "after 17:00 use tomorrow 10:00" rule.
 - `Validation/SearchInputValidator` (days ahead, repeat minutes, time windows) and `EmailRecipientParser` (one address per line).
-- `Browser/AppPaths` — diagnostics screenshots go to `%AppData%/ClickPlay/diagnostics` (cross-platform `ApplicationData`); the results log is `results-log.txt` next to the executable.
+- `Browser/AppPaths` — diagnostics screenshots go to `%AppData%/ClickPlay/diagnostics` (cross-platform `ApplicationData`); `errors-log.txt` (errors only, restarted weekly by `Core/Logging/ErrorLog`) is next to the executable. The old `results-log.txt` is no longer written.
 
 ### Mail
 
@@ -59,7 +59,7 @@ The browser is **not** long-lived: the ViewModel calls `StartAsync` → one oper
 
 ### Testing pattern
 
-Tests construct `MainViewModel` with a fake catalog/session (`tests/ClickPlay.Tests/Fakes/`) and drive properties/commands. `MainViewModel` exposes injectable seams such as `ScanClock` and `ResultsLogPath` for deterministic tests — use them rather than real time or the real log file.
+Tests construct `MainViewModel` with a fake catalog/session (`tests/ClickPlay.Tests/Fakes/`) and drive properties/commands. `MainViewModel` exposes injectable seams such as `ScanClock`, `CalendarClock` and `ErrorsLogPath` for deterministic tests — use them rather than real time or the real log file.
 
 ## Conventions
 

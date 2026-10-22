@@ -11,38 +11,27 @@ public static class ResultsMailFormatter
     public const string DefaultSubject = "ClickPlay";
 
     /// <summary>
-    /// Subject = Subject field + location of the first new slot + its date and time.
-    /// Adds <c>(+N more)</c> when the mail has more than one slot. Line breaks are removed.
+    /// Subject = Subject field + sport selected in the GUI + number of records in this mail, in parentheses.
+    /// Line breaks are removed.
     /// </summary>
     /// <param name="prefix">Subject field text; empty uses <see cref="DefaultSubject"/>.</param>
-    /// <param name="newSlots">New slots of this scan, in Results order. Must not be empty.</param>
+    /// <param name="sport">Sport name selected in the GUI, e.g. "Падел"; empty is left out.</param>
+    /// <param name="recordCount">Number of free-hour records in the mail body; must be at least 1.</param>
     /// <returns>One-line subject.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="recordCount"/> is below 1.</exception>
     /// <example>
     /// <code>
-    /// var subject = ResultsMailFormatter.Subject("Free padel", slots);
-    /// // Free padel Supersport 23.10.2026 18:00–19:00 (+4 more)
+    /// var subject = ResultsMailFormatter.Subject("Free padel", "Падел", 3);
+    /// // Free padel Падел (3)
     /// </code>
     /// </example>
-    public static string Subject(string? prefix, IReadOnlyList<AvailabilitySlot> newSlots)
+    public static string Subject(string? prefix, string? sport, int recordCount)
     {
-        ArgumentNullException.ThrowIfNull(newSlots);
-        if (newSlots.Count == 0)
-        {
-            throw new ArgumentException("At least one slot is required.", nameof(newSlots));
-        }
-
-        var first = newSlots[0];
-        var date = string.IsNullOrWhiteSpace(first.SiteDateLabel)
-            ? first.Date.ToString("dd.MM.yyyy")
-            : first.SiteDateLabel.Trim();
-        var time = first.To is { } end ? $"{first.From:HH:mm}–{end:HH:mm}" : $"{first.From:HH:mm}";
+        ArgumentOutOfRangeException.ThrowIfLessThan(recordCount, 1);
         var head = string.IsNullOrWhiteSpace(prefix) ? DefaultSubject : prefix.Trim();
-        var subject = $"{head} {first.LocationName} {date} {time}";
-        if (newSlots.Count > 1)
-        {
-            subject += $" (+{newSlots.Count - 1} more)";
-        }
-
+        var subject = string.IsNullOrWhiteSpace(sport)
+            ? $"{head} ({recordCount})"
+            : $"{head} {sport.Trim()} ({recordCount})";
         return OneLine(subject);
     }
 

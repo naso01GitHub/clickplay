@@ -15,31 +15,29 @@ public sealed class MailTests
         "BETVAM Padel Club", new DateOnly(2026, 10, 23), new TimeOnly(20, 0), new TimeOnly(21, 0), "Падел 2");
 
     [Fact]
-    public void Subject_OneSlot_PrefixLocationAndTime()
+    public void Subject_PrefixSportAndRecordCount()
     {
-        Assert.Equal(
-            "Free padel Supersport 23.10.2026 18:00–19:00",
-            ResultsMailFormatter.Subject("Free padel", [First]));
+        Assert.Equal("Free padel Падел (3)", ResultsMailFormatter.Subject("  Free padel ", " Падел ", 3));
+        Assert.Equal("Free padel Падел (1)", ResultsMailFormatter.Subject("Free padel", "Падел", 1));
     }
 
     [Fact]
-    public void Subject_SeveralSlots_AddsMoreCount()
+    public void Subject_EmptyPrefixOrSport()
     {
-        Assert.Equal(
-            "Free padel Supersport 23.10.2026 18:00–19:00 (+1 more)",
-            ResultsMailFormatter.Subject("  Free padel ", [First, Second]));
+        Assert.Equal("ClickPlay Тенис (2)", ResultsMailFormatter.Subject("", "Тенис", 2));
+        Assert.Equal("Free (2)", ResultsMailFormatter.Subject("Free", "", 2));
     }
 
     [Fact]
-    public void Subject_EmptyPrefix_UsesDefault()
+    public void Subject_CountBelowOne_Throws()
     {
-        Assert.StartsWith("ClickPlay Supersport", ResultsMailFormatter.Subject("", [First]), StringComparison.Ordinal);
+        Assert.Throws<ArgumentOutOfRangeException>(() => ResultsMailFormatter.Subject("Free", "Падел", 0));
     }
 
     [Fact]
     public void Subject_RemovesLineBreaks()
     {
-        var subject = ResultsMailFormatter.Subject("Free\r\nBcc: x@evil.com", [First]);
+        var subject = ResultsMailFormatter.Subject("Free\r\nBcc: x@evil.com", "Падел", 1);
 
         Assert.DoesNotContain('\r', subject);
         Assert.DoesNotContain('\n', subject);
@@ -289,7 +287,7 @@ public sealed class MailTests
 
         var mail = Assert.Single(sender.Sent);
         Assert.Equal(["a@b.com", "c@d.com"], mail.To);
-        Assert.Equal("Free padel Supersport 23.10.2026 18:00–19:00 (+1 more)", mail.Subject);
+        Assert.Equal("Free padel Падел (2)", mail.Subject);
         Assert.Contains(First.ToLogLine(), mail.Body, StringComparison.Ordinal);
         Assert.Contains(vm.Results, line => line.Contains("Mailed 2 new free hour(s) to 2 address(es).", StringComparison.Ordinal));
         Assert.Equal(string.Empty, vm.Results[^1]);
@@ -317,7 +315,7 @@ public sealed class MailTests
         await WaitUntil(() => sender.Sent.Count >= 2);
 
         Assert.Equal(["new@x.com"], sender.Sent[1].To);
-        Assert.StartsWith("Changed BETVAM Padel Club", sender.Sent[1].Subject, StringComparison.Ordinal);
+        Assert.Equal("Changed Падел (1)", sender.Sent[1].Subject);
 
         vm.StopCommand.Execute(null);
         await search;
@@ -337,7 +335,7 @@ public sealed class MailTests
         await WaitUntil(() => session.SearchCallCount >= 3 && sender.Attempts >= 2);
 
         Assert.True(vm.IsSearching);
-        Assert.Contains("Mail failed: InvalidOperationException: auth failed", File.ReadAllText(vm.ResultsLogPath), StringComparison.Ordinal);
+        Assert.Contains("Mail failed: InvalidOperationException: auth failed", File.ReadAllText(vm.ErrorsLogPath), StringComparison.Ordinal);
 
         vm.StopCommand.Execute(null);
         await search;
@@ -383,7 +381,7 @@ public sealed class MailTests
         new(new PlaywrightClickToPlayCatalog(session), sender, new MailSettingsStore(new FakeSecretStore(), TempDir()))
         {
             SearchLoopDelayOverride = TimeSpan.FromMilliseconds(80),
-            ResultsLogPath = Path.Combine(TempDir(), "results-log.txt"),
+            ErrorsLogPath = Path.Combine(TempDir(), "errors-log.txt"),
             SmtpHost = "smtp.x.com",
             SmtpPort = "587",
             SmtpUser = "me@x.com",

@@ -36,7 +36,7 @@ public sealed class PlaywrightClickToPlayCatalog : IClickToPlayCatalog
         return _session.SelectCityAsync(sport, city, cancellationToken);
     }
 
-    public Task<IReadOnlyList<AvailabilitySlot>> SearchAvailabilityAsync(
+    public Task<AvailabilityScan> SearchAvailabilityAsync(
         SearchRequest request,
         IProgress<string>? progress,
         CancellationToken cancellationToken)

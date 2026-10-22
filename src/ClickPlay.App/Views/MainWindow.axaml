@@ -178,7 +178,7 @@
                     <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding MailFrom}" Classes.locked="{Binding IsSearching}" />
                     <TextBlock Grid.Row="5" Grid.Column="0" Text="Subject" VerticalAlignment="Center" />
                     <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding MailSubject}"
-                             PlaceholderText="mail subject = this text + location + time slot" />
+                             PlaceholderText="mail subject = this text + sport + (number of records)" />
                     <TextBlock Grid.Row="6" Grid.Column="0" Text="To" VerticalAlignment="Top" Margin="0,6,0,0" />
                     <TextBox Grid.Row="6"
                              Grid.Column="1"

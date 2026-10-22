@@ -41,17 +41,15 @@ public static class AppPaths
     }
 
     /// <summary>
-    /// Text file next to the running exe. Created on first write; never deleted by Search.
+    /// Errors-only log next to the running exe (<c>errors-log.txt</c>). Created on the first error;
+    /// deleted and restarted weekly by <see cref="Logging.ErrorLog"/>. The old <c>results-log.txt</c>
+    /// in the same folder is no longer written and is left as it is.
     /// </summary>
+    /// <returns>Full path of <c>errors-log.txt</c>.</returns>
     /// <example>
     /// <code>
-    /// var path = AppPaths.ResultsLogFile();
+    /// var log = new ErrorLog(AppPaths.ErrorsLogFile());
     /// </code>
     /// </example>
-    public static string ResultsLogFile()
-    {
-        var dir = AppContext.BaseDirectory;
-        Directory.CreateDirectory(dir);
-        return Path.Combine(dir, "results-log.txt");
-    }
+    public static string ErrorsLogFile() => Path.Combine(AppContext.BaseDirectory, "errors-log.txt");
 }

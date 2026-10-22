@@ -62,11 +62,14 @@ public sealed class FakeClickToPlaySession : IClickToPlaySession
 
     public Func<int, IReadOnlyList<AvailabilitySlot>>? AvailabilityForCall { get; init; }
 
+    /// <summary>Location/days reported as not read, per search call (1-based); none when null.</summary>
+    public Func<int, IReadOnlyList<VenueDay>>? SkippedForCall { get; init; }
+
     public int ThrowOnSearchCallNumber { get; init; }
 
     public Exception? SearchException { get; init; }
 
-    public Task<IReadOnlyList<AvailabilitySlot>> SearchAvailabilityAsync(
+    public Task<AvailabilityScan> SearchAvailabilityAsync(
         SearchRequest request,
         IProgress<string>? progress,
         CancellationToken cancellationToken)
@@ -81,7 +84,8 @@ public sealed class FakeClickToPlaySession : IClickToPlaySession
 
         progress?.Report("Checking locations…");
         var slots = AvailabilityForCall?.Invoke(SearchCallCount) ?? Availability;
-        return Task.FromResult(slots);
+        var skipped = SkippedForCall?.Invoke(SearchCallCount) ?? [];
+        return Task.FromResult(new AvailabilityScan(slots, skipped));
     }
 
     public Task CloseBrowserAsync(CancellationToken cancellationToken)

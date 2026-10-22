@@ -227,7 +227,7 @@ public sealed class AvailabilityLoopTests
         {
             SearchLoopDelayOverride = TimeSpan.FromSeconds(30),
             ScanClock = () => new DateTime(2026, 10, 20, 21, 0, 0),
-            ResultsLogPath = TempLogPath()
+            ErrorsLogPath = TempLogPath()
         };
 
         await vm.LoadSportsCommand.ExecuteAsync(null);
@@ -244,7 +244,7 @@ public sealed class AvailabilityLoopTests
         Assert.Contains(vm.Results, line => line.Contains("Amik Sport", StringComparison.Ordinal));
         Assert.Contains(vm.Results, line => line.Contains("18:00", StringComparison.Ordinal));
         Assert.Equal(string.Empty, vm.Results[^1]);
-        Assert.Contains("Amik Sport", File.ReadAllText(vm.ResultsLogPath), StringComparison.Ordinal);
+        Assert.False(File.Exists(vm.ErrorsLogPath));
         Assert.True(vm.CanStop);
         Assert.False(vm.CanSearch);
         Assert.Equal(4, session.CloseBrowserCount);
@@ -265,7 +265,7 @@ public sealed class AvailabilityLoopTests
         var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
         {
             SearchLoopDelayOverride = TimeSpan.FromMilliseconds(80),
-            ResultsLogPath = TempLogPath()
+            ErrorsLogPath = TempLogPath()
         };
 
         await vm.LoadSportsCommand.ExecuteAsync(null);
@@ -319,7 +319,7 @@ public sealed class AvailabilityLoopTests
         {
             SearchLoopDelayOverride = TimeSpan.FromMilliseconds(80),
             ScanClock = () => new DateTime(2026, 10, 20, 21, 0, 0).AddMinutes(stamp++),
-            ResultsLogPath = TempLogPath()
+            ErrorsLogPath = TempLogPath()
         };
 
         await vm.LoadSportsCommand.ExecuteAsync(null);
@@ -347,7 +347,7 @@ public sealed class AvailabilityLoopTests
     }
 
     [Fact]
-    public async Task Search_AfterCrash_ClearsLogAndSearchesAgain()
+    public async Task Search_AfterCrash_KeepsResults_AndDoesNotResendOldRecords()
     {
         var logPath = TempLogPath();
         var slot = new AvailabilitySlot(
@@ -364,7 +364,7 @@ public sealed class AvailabilityLoopTests
         var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
         {
             SearchLoopDelayOverride = TimeSpan.FromMilliseconds(80),
-            ResultsLogPath = logPath
+            ErrorsLogPath = logPath
         };
 
         await vm.LoadSportsCommand.ExecuteAsync(null);
@@ -375,14 +375,15 @@ public sealed class AvailabilityLoopTests
         vm.Locations[0].IsSelected = true;
 
         var search = vm.SearchCommand.ExecuteAsync(null);
-        await WaitUntil(() => session.SearchCallCount >= 3 && vm.Results.Any(line => line.Contains("Amik Sport", StringComparison.Ordinal)));
+        await WaitUntil(() => session.SearchCallCount >= 4);
         Assert.True(vm.IsSearching);
         Assert.Contains(vm.Results, line => line.Contains("Search failed", StringComparison.Ordinal));
-        Assert.Contains(vm.Results, line => line.Contains("18:00", StringComparison.Ordinal));
+        Assert.Single(vm.Results, line => line.Contains("Amik Sport", StringComparison.Ordinal));
         var log = File.ReadAllText(logPath);
-        Assert.Contains("Amik Sport", log, StringComparison.Ordinal);
+        Assert.StartsWith(ClickPlay.Core.Logging.ErrorLog.HeaderPrefix, log, StringComparison.Ordinal);
         Assert.Contains("Search failed", log, StringComparison.Ordinal);
-        Assert.True(log.Split("Amik Sport", StringSplitOptions.None).Length - 1 >= 2);
+        Assert.Contains("site busy", log, StringComparison.Ordinal);
+        Assert.DoesNotContain("Amik Sport", log, StringComparison.Ordinal);
 
         vm.StopCommand.Execute(null);
         await search;
@@ -396,7 +397,7 @@ public sealed class AvailabilityLoopTests
         {
             SearchLoopDelayOverride = TimeSpan.FromSeconds(30),
             CalendarClock = () => new DateTime(2026, 10, 22, 9, 0, 0),
-            ResultsLogPath = TempLogPath(),
+            ErrorsLogPath = TempLogPath(),
             SelectedDate = new DateTime(2026, 10, 19),
             DaysAheadText = "3"
         };
@@ -420,7 +421,7 @@ public sealed class AvailabilityLoopTests
         {
             SearchLoopDelayOverride = TimeSpan.FromSeconds(30),
             CalendarClock = () => new DateTime(2026, 10, 22, 9, 0, 0),
-            ResultsLogPath = TempLogPath(),
+            ErrorsLogPath = TempLogPath(),
             SelectedDate = new DateTime(2026, 10, 25)
         };
 
@@ -443,7 +444,7 @@ public sealed class AvailabilityLoopTests
         {
             SearchLoopDelayOverride = TimeSpan.FromMilliseconds(80),
             CalendarClock = () => now,
-            ResultsLogPath = TempLogPath(),
+            ErrorsLogPath = TempLogPath(),
             SelectedDate = new DateTime(2026, 10, 22)
         };
 
@@ -460,6 +461,54 @@ public sealed class AvailabilityLoopTests
     }
 
     [Fact]
+    public async Task Search_SlotBookedThenFreeAgain_IsShownAgain()
+    {
+        var slot = new AvailabilitySlot("Amik Sport", new DateOnly(2026, 10, 19), new TimeOnly(18, 0), new TimeOnly(19, 0));
+        var session = new FakeClickToPlaySession
+        {
+            AvailabilityForCall = call => call == 2 ? [] : [slot]
+        };
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
+        {
+            SearchLoopDelayOverride = TimeSpan.FromMilliseconds(80),
+            ErrorsLogPath = TempLogPath()
+        };
+
+        var search = await StartSearchAsync(vm);
+        await WaitUntil(() => session.SearchCallCount >= 4);
+
+        Assert.Equal(2, vm.Results.Count(line => line.Contains("Amik Sport", StringComparison.Ordinal)));
+
+        vm.StopCommand.Execute(null);
+        await search;
+    }
+
+    [Fact]
+    public async Task Search_SkippedVenueDay_KeepsPreviousRecords_NoResend()
+    {
+        var day = new DateOnly(2026, 10, 19);
+        var slot = new AvailabilitySlot("Amik Sport", day, new TimeOnly(18, 0), new TimeOnly(19, 0));
+        var session = new FakeClickToPlaySession
+        {
+            AvailabilityForCall = call => call == 2 ? [] : [slot],
+            SkippedForCall = call => call == 2 ? [new VenueDay("Amik Sport", day)] : []
+        };
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
+        {
+            SearchLoopDelayOverride = TimeSpan.FromMilliseconds(80),
+            ErrorsLogPath = TempLogPath()
+        };
+
+        var search = await StartSearchAsync(vm);
+        await WaitUntil(() => session.SearchCallCount >= 4);
+
+        Assert.Single(vm.Results, line => line.Contains("Amik Sport", StringComparison.Ordinal));
+
+        vm.StopCommand.Execute(null);
+        await search;
+    }
+
+    [Fact]
     public async Task Search_KeepsPcAwake_UntilStopped()
     {
         var session = new FakeClickToPlaySession();
@@ -467,7 +516,7 @@ public sealed class AvailabilityLoopTests
         var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session), keepAwake: keepAwake)
         {
             SearchLoopDelayOverride = TimeSpan.FromSeconds(30),
-            ResultsLogPath = TempLogPath()
+            ErrorsLogPath = TempLogPath()
         };
 
         await vm.LoadSportsCommand.ExecuteAsync(null);
@@ -517,7 +566,7 @@ public sealed class AvailabilityLoopTests
         var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
         {
             SearchLoopDelayOverride = TimeSpan.FromMilliseconds(80),
-            ResultsLogPath = TempLogPath()
+            ErrorsLogPath = TempLogPath()
         };
 
         await vm.LoadSportsCommand.ExecuteAsync(null);

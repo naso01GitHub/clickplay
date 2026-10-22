@@ -324,6 +324,7 @@ public partial class MainViewModel : ViewModelBase
         catch (Exception ex)
         {
             StatusMessage = $"Could not load sports: {ex.Message}";
+            LogError(StatusMessage);
         }
         finally
         {
@@ -386,6 +387,7 @@ public partial class MainViewModel : ViewModelBase
         catch (Exception ex)
         {
             StatusMessage = $"Could not load cities: {ex.Message}";
+            LogError(StatusMessage);
         }
         finally
         {
@@ -433,6 +435,7 @@ public partial class MainViewModel : ViewModelBase
         catch (Exception ex)
         {
             StatusMessage = $"Could not load locations: {ex.Message}";
+            LogError(StatusMessage);
         }
         finally
         {

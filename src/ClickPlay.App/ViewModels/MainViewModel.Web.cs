@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using ClickPlay.App.Platform;
 using ClickPlay.Core.Browser;
+using ClickPlay.Core.Logging;
 using ClickPlay.Core.Mail;
 using ClickPlay.Core.Models;
 using ClickPlay.Core.Services;
@@ -12,12 +13,17 @@ namespace ClickPlay.App.ViewModels;
 
 /// <summary>
 /// Main window ViewModel — web search part: the Search/Stop loop against clicktoplay.io, browser options,
-/// Results publishing and results log, and the wait between cycles.
+/// Results publishing, the errors log, and the wait between cycles.
 /// </summary>
 public partial class MainViewModel
 {
     private readonly IKeepAwake? _keepAwake;
-    private readonly HashSet<string> _seenResultLines = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Records of the previous successful scan (Results line → its location/day). A record is "new", shown and
+    /// mailed, when it is not in here. Replaced after every successful scan; a failed cycle leaves it as it is.
+    /// </summary>
+    private Dictionary<string, VenueDay> _previousScan = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Tests can shorten the wait between cycles.
@@ -35,9 +41,10 @@ public partial class MainViewModel
     public Func<DateTime> CalendarClock { get; set; } = () => DateTime.Now;
 
     /// <summary>
-    /// Results log on disk. Defaults to <c>results-log.txt</c> next to the exe. Tests can replace it.
+    /// Errors-only log on disk. Defaults to <c>errors-log.txt</c> next to the exe; deleted and restarted weekly.
+    /// Tests can replace it.
     /// </summary>
-    public string ResultsLogPath { get; set; } = AppPaths.ResultsLogFile();
+    public string ErrorsLogPath { get; set; } = AppPaths.ErrorsLogFile();
 
     /// <summary>
     /// When true, Chromium is shown. When false (default), Playwright runs headless.
@@ -127,17 +134,17 @@ public partial class MainViewModel
 
                     StatusMessage = "Opening clicktoplay.io…";
                     await _catalog.StartAsync(BrowserLaunchOptions, cancellationToken).ConfigureAwait(true);
-                    var slots = await _catalog.SearchAvailabilityAsync(request, progress, cancellationToken)
+                    var scan = await _catalog.SearchAvailabilityAsync(request, progress, cancellationToken)
                         .ConfigureAwait(true);
 
-                    var newSlots = PublishNewResults(slots);
+                    var newSlots = PublishNewResults(scan);
                     StatusMessage = newSlots.Count == 0
-                        ? (slots.Count == 0
+                        ? (scan.Slots.Count == 0
                             ? "No free hours found. Closing browser…"
                             : "No new free hours. Closing browser…")
                         : $"Found {newSlots.Count} new free hour(s). Closing browser…";
                     await _catalog.CloseBrowserAsync(cancellationToken).ConfigureAwait(true);
-                    await MailNewResultsAsync(smtp, newSlots, cancellationToken).ConfigureAwait(true);
+                    await MailNewResultsAsync(smtp, sport, newSlots, cancellationToken).ConfigureAwait(true);
 
                     await WaitBeforeNextSearchAsync(ReadWaitDuration(repeatMinutes), cancellationToken)
                         .ConfigureAwait(true);
@@ -319,72 +326,83 @@ public partial class MainViewModel
         when.ToString("dd.MM.yyyy HH:mm:ss");
 
     /// <summary>
-    /// Adds a scan block to Results and results-log: the scan stamp, every slot not shown in an earlier scan, and an empty line.
+    /// Adds a scan block to the Results window: the scan stamp, every record that was not in the previous
+    /// successful scan, and an empty line. A record that disappeared (booked) and came back (cancelled) is new again.
+    /// For location/days the scan skipped, the previous records are kept, so they are not re-sent next time.
+    /// Results are not written to disk.
     /// </summary>
-    /// <param name="slots">All free slots found in this scan.</param>
+    /// <param name="scan">This scan's free slots and skipped location/days.</param>
     /// <returns>Only the slots that are new in this scan (used for the mail).</returns>
     /// <example>
     /// <code>
-    /// var newSlots = PublishNewResults(slots);
-    /// await MailNewResultsAsync(smtp, newSlots, cancellationToken);
+    /// var newSlots = PublishNewResults(scan);
+    /// await MailNewResultsAsync(smtp, sport, newSlots, cancellationToken);
     /// </code>
     /// </example>
-    private List<AvailabilitySlot> PublishNewResults(IReadOnlyList<AvailabilitySlot> slots)
+    private List<AvailabilitySlot> PublishNewResults(AvailabilityScan scan)
     {
-        var block = new List<string> { FormatScanStamp(ScanClock()) };
-        Results.Add(block[0]);
+        Results.Add(FormatScanStamp(ScanClock()));
+        var current = new Dictionary<string, VenueDay>(StringComparer.Ordinal);
         var newSlots = new List<AvailabilitySlot>();
-        foreach (var slot in slots)
+        foreach (var slot in scan.Slots)
         {
             var line = slot.ToLogLine();
-            if (_seenResultLines.Add(line))
+            if (!current.TryAdd(line, VenueDay.Of(slot)))
+            {
+                continue;
+            }
+
+            if (!_previousScan.ContainsKey(line))
             {
                 Results.Add(line);
-                block.Add(line);
                 newSlots.Add(slot);
             }
         }
 
+        var skipped = scan.Skipped.ToHashSet();
+        foreach (var (line, venueDay) in _previousScan)
+        {
+            if (skipped.Contains(venueDay))
+            {
+                current.TryAdd(line, venueDay);
+            }
+        }
+
+        _previousScan = current;
         Results.Add(string.Empty);
-        block.Add(string.Empty);
-        AppendResultsLog(block);
         return newSlots;
     }
 
+    /// <summary>
+    /// Adds a failed search cycle to the Results window and writes it to the errors log.
+    /// The previous scan's records are kept, so the next successful scan does not re-send them.
+    /// </summary>
+    /// <param name="failure">Line from <see cref="FormatSearchFailure"/>.</param>
+    /// <returns>No return value.</returns>
+    /// <example>
+    /// <code>
+    /// PublishSearchFailure(FormatSearchFailure(StatusMessage, ex));
+    /// </code>
+    /// </example>
     private void PublishSearchFailure(string failure)
     {
-        _seenResultLines.Clear();
-        Results.Clear();
-        var block = new List<string>
-        {
-            FormatScanStamp(ScanClock()),
-            failure,
-            string.Empty
-        };
-        foreach (var line in block)
-        {
-            Results.Add(line);
-        }
-
-        AppendResultsLog(block);
+        Results.Add(FormatScanStamp(ScanClock()));
+        Results.Add(failure);
+        Results.Add(string.Empty);
+        LogError(failure);
     }
 
-    private void AppendResultsLog(IReadOnlyList<string> lines)
-    {
-        try
-        {
-            var dir = Path.GetDirectoryName(ResultsLogPath);
-            if (!string.IsNullOrWhiteSpace(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
-
-            File.AppendAllLines(ResultsLogPath, lines);
-        }
-        catch
-        {
-        }
-    }
+    /// <summary>
+    /// Writes one error to <see cref="ErrorsLogPath"/> (errors only; the file restarts weekly). Never throws.
+    /// </summary>
+    /// <param name="message">Error text, e.g. "Search failed (…)" or "Mail failed: …".</param>
+    /// <returns>No return value.</returns>
+    /// <example>
+    /// <code>
+    /// LogError($"Could not load sports: {ex.Message}");
+    /// </code>
+    /// </example>
+    private void LogError(string message) => new ErrorLog(ErrorsLogPath, ScanClock).Append(message);
 
     private async Task WaitBeforeNextSearchAsync(TimeSpan wait, CancellationToken cancellationToken)
     {

@@ -195,7 +195,7 @@ On the Mac, ClickPlay's files live under the hidden folder `~/.config/ClickPlay`
 | Email settings (Host, Port, User, From, To, Subject) | `%AppData%\ClickPlay\smtp.settings.json` | `~/.config/ClickPlay/smtp.settings.json` | No — retype once on the Mac |
 | SMTP password | encrypted file, locked to your Windows login | Keychain item **ClickPlay** / smtp-password | Cannot be moved — retype |
 | Diagnostic screenshots | `%AppData%\ClickPlay\diagnostics` | `~/.config/ClickPlay/diagnostics` | No |
-| Results log | next to `ClickPlay.App.exe` | `src/ClickPlay.App/bin/Debug/net10.0/results-log.txt` | Only if you want the history |
+| Errors log (errors only, restarted weekly) | next to `ClickPlay.App.exe` | `src/ClickPlay.App/bin/Debug/net10.0/errors-log.txt` | No |
 | Chromium | `%LocalAppData%\ms-playwright` | `~/Library/Caches/ms-playwright` | No — installed in Step 3 |
 
 To open a hidden folder in Finder: Go → Go to Folder (Shift+Command+G) → type `~/.config/ClickPlay`. To see or delete the saved password: open **Keychain Access** and search for **ClickPlay**.
@@ -217,7 +217,7 @@ dotnet publish src/ClickPlay.App -c Release -r osx-arm64 --self-contained true -
 ~/Applications/ClickPlay/ClickPlay.App
 ```
 
-You can also double-click `ClickPlay.App` in that folder in Finder; it opens with a Terminal window beside it. The results log is then written to `~/Applications/ClickPlay/results-log.txt`.
+You can also double-click `ClickPlay.App` in that folder in Finder; it opens with a Terminal window beside it. The errors log is then written to `~/Applications/ClickPlay/errors-log.txt`.
 
 This build can also be made on the Windows PC (same command, any output folder) and copied to the Mac. A copied build needs two extra lines before the first start, or macOS refuses to open it:
 
