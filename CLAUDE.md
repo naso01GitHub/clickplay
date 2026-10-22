@@ -35,7 +35,7 @@ No linter is configured. Mac setup (tools, Chromium, standalone `osx-arm64`/`osx
 Three projects:
 
 - **ClickPlay.Core** — UI-free, cross-platform. Models, validation, calendar logic, and all Playwright code.
-- **ClickPlay.App** — Avalonia 12 + CommunityToolkit.Mvvm. Essentially one screen: `MainWindow` bound to `MainViewModel`.
+- **ClickPlay.App** — Avalonia 12 + CommunityToolkit.Mvvm. Essentially one screen: `MainWindow` bound to `MainViewModel`, a partial class split by concern: `MainViewModel.cs` (GUI: cascade, inputs, status banner), `MainViewModel.Web.cs` (web search loop, Results, log), `MainViewModel.Mail.cs` (SMTP fields, settings, sending). `Platform/` holds OS-specific code (keep-awake).
 - **ClickPlay.Tests** — xUnit; references both projects and tests the ViewModel directly with fakes.
 
 ### Layering of the site access

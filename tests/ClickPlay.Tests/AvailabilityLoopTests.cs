@@ -459,6 +459,46 @@ public sealed class AvailabilityLoopTests
         await search;
     }
 
+    [Fact]
+    public async Task Search_KeepsPcAwake_UntilStopped()
+    {
+        var session = new FakeClickToPlaySession();
+        var keepAwake = new FakeKeepAwake();
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session), keepAwake: keepAwake)
+        {
+            SearchLoopDelayOverride = TimeSpan.FromSeconds(30),
+            ResultsLogPath = TempLogPath()
+        };
+
+        await vm.LoadSportsCommand.ExecuteAsync(null);
+        Assert.False(keepAwake.IsActive);
+
+        var search = await StartSearchAsync(vm);
+        await WaitUntil(() => session.SearchCallCount >= 1);
+        Assert.True(keepAwake.IsActive);
+
+        vm.StopCommand.Execute(null);
+        await search;
+
+        Assert.False(keepAwake.IsActive);
+        Assert.Equal(1, keepAwake.BeginCount);
+        Assert.Equal(1, keepAwake.EndCount);
+    }
+
+    [Fact]
+    public void SystemKeepAwake_BeginEnd_IsSafeToRepeat()
+    {
+        using var keepAwake = new ClickPlay.App.Platform.SystemKeepAwake();
+
+        var first = keepAwake.Begin();
+        var second = keepAwake.Begin();
+        keepAwake.End();
+        keepAwake.End();
+
+        Assert.Equal(first, second);
+        Assert.Equal(OperatingSystem.IsWindows() || OperatingSystem.IsMacOS(), first);
+    }
+
     private static async Task<Task> StartSearchAsync(MainViewModel vm)
     {
         await vm.LoadSportsCommand.ExecuteAsync(null);

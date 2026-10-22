@@ -60,6 +60,7 @@ Target website (clicktoplay.io) rules — terms, locators, overlay recovery, and
 - Locations appear after sport **and** city are selected. **Multiple locations can be selected**.
 - Days ahead: a **text box** (positive integer). No per-day time rows. Each scan covers the GUI calendar day plus the following days, `Days ahead` days in total. Before every search cycle, a calendar date in the past is moved to today (a future date is kept).
 - Repeat (minutes between cycles): default **2**, range 1–60.
+- While Search runs (including waits between cycles), the PC must not go to idle sleep; the display may turn off. `App/Platform/SystemKeepAwake` does this (Windows `SetThreadExecutionState` with `ES_SYSTEM_REQUIRED` only; Mac `caffeinate -i -w <pid>`). It is the one justified Win32 call and lives in ClickPlay.App behind `IKeepAwake`, guarded by `OperatingSystem` checks — not in ClickPlay.Core.
 - Two time windows only: **weekdays**, and **weekends and holidays** (Saturday, Sunday, and Bulgarian public holidays).
 - Email results via user SMTP settings (To accepts many addresses, one per line). After each scan that adds **new** Results records, send **one** mail with all of them to every To address. Subject = Subject field + location + time slot of the first new record (`(+N more)` when several).
 - While Search runs, Host, Port, User, Password, and From show only `*` and are read-only. To and Subject stay visible and editable; the mail uses their values at send time. A mail failure never stops Search.

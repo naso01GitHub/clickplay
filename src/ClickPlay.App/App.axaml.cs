@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using ClickPlay.App.Platform;
 using ClickPlay.App.ViewModels;
 using ClickPlay.App.Views;
 using ClickPlay.Core.Browser;
@@ -13,6 +14,7 @@ public partial class App : Application
 {
     private ClickToPlayBrowserSession? _session;
     private MainViewModel? _viewModel;
+    private readonly SystemKeepAwake _keepAwake = new();
 
     /// <summary>
     /// Loads <c>App.axaml</c> (styles and resources).
@@ -46,7 +48,8 @@ public partial class App : Application
             _viewModel = new MainViewModel(
                 new PlaywrightClickToPlayCatalog(_session),
                 new MailKitMailSender(),
-                CreateMailSettingsStore());
+                CreateMailSettingsStore(),
+                _keepAwake);
             desktop.MainWindow = new MainWindow
             {
                 DataContext = _viewModel,
@@ -80,7 +83,7 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// On app exit: saves the Email settings, then closes Chromium and disposes the browser session.
+    /// On app exit: saves the Email settings, lets the PC sleep again, then closes Chromium and disposes the browser session.
     /// </summary>
     /// <param name="sender">The desktop lifetime.</param>
     /// <param name="e">Exit details (not used).</param>
@@ -93,6 +96,7 @@ public partial class App : Application
     private void OnExit(object? sender, ControlledApplicationLifetimeExitEventArgs e)
     {
         _viewModel?.SaveMailSettings();
+        _keepAwake.Dispose();
         if (_session is null)
         {
             return;
