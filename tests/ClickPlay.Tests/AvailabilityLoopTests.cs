@@ -502,10 +502,92 @@ public sealed class AvailabilityLoopTests
         var search = await StartSearchAsync(vm);
         await WaitUntil(() => session.SearchCallCount >= 4);
 
-        Assert.Single(vm.Results, line => line.Contains("Amik Sport", StringComparison.Ordinal));
+        Assert.Single(vm.Results, line => line == slot.ToLogLine());
+        Assert.DoesNotContain(vm.Results, line => line.StartsWith("Booked:", StringComparison.Ordinal));
 
         vm.StopCommand.Execute(null);
         await search;
+    }
+
+    [Fact]
+    public async Task Search_SlotGone_ShowsBookedLine_ThenNewAgain()
+    {
+        var day = new DateOnly(2026, 10, 19);
+        var slot = new AvailabilitySlot("Amik Sport", day, new TimeOnly(18, 0), new TimeOnly(19, 0));
+        var session = new FakeClickToPlaySession
+        {
+            AvailabilityForCall = call => call == 2 ? [] : [slot]
+        };
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
+        {
+            SearchLoopDelayOverride = TimeSpan.FromMilliseconds(80),
+            CalendarClock = () => new DateTime(2026, 10, 19, 9, 0, 0),
+            ScanClock = () => new DateTime(2026, 10, 19, 9, 0, 0),
+            ErrorsLogPath = TempLogPath(),
+            SelectedDate = new DateTime(2026, 10, 19)
+        };
+
+        var search = await StartSearchAsync(vm);
+        await WaitUntil(() => session.SearchCallCount >= 4);
+        vm.StopCommand.Execute(null);
+        await search;
+
+        Assert.Single(vm.Results, line => line == $"Booked: {slot.ToLogLine()}");
+        Assert.Equal(2, vm.Results.Count(line => line == slot.ToLogLine()));
+    }
+
+    [Fact]
+    public async Task Search_SlotGoneAfterItStarted_IsNotShownAsBooked()
+    {
+        var day = new DateOnly(2026, 10, 19);
+        var slot = new AvailabilitySlot("Amik Sport", day, new TimeOnly(18, 0), new TimeOnly(19, 0));
+        var now = new DateTime(2026, 10, 19, 17, 50, 0);
+        var session = new FakeClickToPlaySession
+        {
+            AvailabilityForCall = call => call == 1 ? [slot] : []
+        };
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
+        {
+            SearchLoopDelayOverride = TimeSpan.FromMilliseconds(80),
+            CalendarClock = () => now,
+            ScanClock = () => now,
+            ErrorsLogPath = TempLogPath(),
+            SelectedDate = new DateTime(2026, 10, 19)
+        };
+
+        var search = await StartSearchAsync(vm);
+        await WaitUntil(() => session.SearchCallCount >= 1);
+        now = new DateTime(2026, 10, 19, 18, 5, 0);
+        await WaitUntil(() => session.SearchCallCount >= 3);
+        vm.StopCommand.Execute(null);
+        await search;
+
+        Assert.DoesNotContain(vm.Results, line => line.StartsWith("Booked:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Search_SkippedVenueDay_IsShownInResultsAndErrorsLog()
+    {
+        var day = new DateOnly(2026, 10, 19);
+        var log = TempLogPath();
+        var session = new FakeClickToPlaySession
+        {
+            SkippedForCall = call => call == 1 ? [new VenueDay("Amik Sport", day)] : []
+        };
+        var vm = new MainViewModel(new PlaywrightClickToPlayCatalog(session))
+        {
+            SearchLoopDelayOverride = TimeSpan.FromSeconds(30),
+            ErrorsLogPath = log
+        };
+
+        var search = await StartSearchAsync(vm);
+        await WaitUntil(() => session.SearchCallCount >= 1);
+        vm.StopCommand.Execute(null);
+        await search;
+
+        const string note = "Skipped Amik Sport, 19.10.2026: site busy";
+        Assert.Contains(note, vm.Results);
+        Assert.Contains(note, File.ReadAllText(log));
     }
 
     [Fact]

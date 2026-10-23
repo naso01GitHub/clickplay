@@ -322,6 +322,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
 
             var slots = new List<AvailabilitySlot>();
             var skipped = new List<VenueDay>();
+            var skipNotes = new List<string>();
             var attempts = 0;
             var schedulesRead = 0;
             string? lastSkip = null;
@@ -333,8 +334,14 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                     cancellationToken.ThrowIfCancellationRequested();
                     if (string.IsNullOrWhiteSpace(venue.ClubSlug))
                     {
-                        progress?.Report($"{venue.Name} has no club link; reload the locations.");
+                        var noLink = $"{venue.Name} has no club link; reload the locations.";
+                        progress?.Report(noLink);
                         skipped.Add(new VenueDay(venue.Name, day));
+                        if (!skipNotes.Contains(noLink))
+                        {
+                            skipNotes.Add(noLink);
+                        }
+
                         continue;
                     }
 
@@ -351,6 +358,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                         lastSkip = $"Skipped {venue.Name}, {day:dd.MM.yyyy}: {FirstLine(ex.Message)}";
                         progress?.Report(lastSkip);
                         skipped.Add(new VenueDay(venue.Name, day));
+                        skipNotes.Add(lastSkip);
                     }
                 }
             }
@@ -361,7 +369,7 @@ public sealed class ClickToPlayBrowserSession : IClickToPlaySession
                     $"No club schedule could be read in this scan. Last: {lastSkip}");
             }
 
-            return new AvailabilityScan(slots, skipped);
+            return new AvailabilityScan(slots, skipped, skipNotes);
         }
         finally
         {

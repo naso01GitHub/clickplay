@@ -36,12 +36,16 @@ public readonly record struct VenueDay(string Venue, DateOnly Day)
 /// </summary>
 /// <param name="Slots">Free slots inside the GUI time windows.</param>
 /// <param name="Skipped">Location/days that were not read in this scan.</param>
+/// <param name="SkipNotes">One line per skip with its reason, e.g. <c>Skipped Supersport, 23.10.2026: busy</c>.</param>
 /// <example>
 /// <code>
-/// var scan = new AvailabilityScan(slots, [new VenueDay("Supersport", day)]);
+/// var scan = new AvailabilityScan(slots, [new VenueDay("Supersport", day)], ["Skipped Supersport, 23.10.2026: busy"]);
 /// </code>
 /// </example>
-public sealed record AvailabilityScan(IReadOnlyList<AvailabilitySlot> Slots, IReadOnlyCollection<VenueDay> Skipped)
+public sealed record AvailabilityScan(
+    IReadOnlyList<AvailabilitySlot> Slots,
+    IReadOnlyCollection<VenueDay> Skipped,
+    IReadOnlyList<string> SkipNotes)
 {
     /// <summary>
     /// A scan where every location/day was read.
@@ -53,5 +57,5 @@ public sealed record AvailabilityScan(IReadOnlyList<AvailabilitySlot> Slots, IRe
     /// var scan = AvailabilityScan.Complete(slots);
     /// </code>
     /// </example>
-    public static AvailabilityScan Complete(IReadOnlyList<AvailabilitySlot> slots) => new(slots, []);
+    public static AvailabilityScan Complete(IReadOnlyList<AvailabilitySlot> slots) => new(slots, [], []);
 }

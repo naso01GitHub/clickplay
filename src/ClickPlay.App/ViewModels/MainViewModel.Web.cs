@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using ClickPlay.App.Platform;
 using ClickPlay.Core.Browser;
+using ClickPlay.Core.Calendar;
 using ClickPlay.Core.Logging;
 using ClickPlay.Core.Mail;
 using ClickPlay.Core.Models;
@@ -23,7 +24,7 @@ public partial class MainViewModel
     /// Records of the previous successful scan (Results line → its location/day). A record is "new", shown and
     /// mailed, when it is not in here. Replaced after every successful scan; a failed cycle leaves it as it is.
     /// </summary>
-    private Dictionary<string, VenueDay> _previousScan = new(StringComparer.Ordinal);
+    private Dictionary<string, AvailabilitySlot> _previousScan = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Tests can shorten the wait between cycles.
@@ -137,7 +138,7 @@ public partial class MainViewModel
                     var scan = await _catalog.SearchAvailabilityAsync(request, progress, cancellationToken)
                         .ConfigureAwait(true);
 
-                    var newSlots = PublishNewResults(scan);
+                    var newSlots = PublishNewResults(scan, request);
                     StatusMessage = newSlots.Count == 0
                         ? (scan.Slots.Count == 0
                             ? "No free hours found. Closing browser…"
@@ -329,25 +330,27 @@ public partial class MainViewModel
     /// Adds a scan block to the Results window: the scan stamp, every record that was not in the previous
     /// successful scan, and an empty line. A record that disappeared (booked) and came back (cancelled) is new again.
     /// For location/days the scan skipped, the previous records are kept, so they are not re-sent next time.
-    /// Results are not written to disk.
+    /// A previous record that this scan read but no longer found is shown as <c>Booked: …</c> (Results only, not
+    /// mailed). Each skip is shown with its reason and written to the errors log. Results are not written to disk.
     /// </summary>
-    /// <param name="scan">This scan's free slots and skipped location/days.</param>
+    /// <param name="scan">This scan's free slots, skipped location/days and skip reasons.</param>
+    /// <param name="request">The scan's locations, days and windows; only slots inside it can be reported as booked.</param>
     /// <returns>Only the slots that are new in this scan (used for the mail).</returns>
     /// <example>
     /// <code>
-    /// var newSlots = PublishNewResults(scan);
+    /// var newSlots = PublishNewResults(scan, request);
     /// await MailNewResultsAsync(smtp, sport, newSlots, cancellationToken);
     /// </code>
     /// </example>
-    private List<AvailabilitySlot> PublishNewResults(AvailabilityScan scan)
+    private List<AvailabilitySlot> PublishNewResults(AvailabilityScan scan, SearchRequest request)
     {
         Results.Add(FormatScanStamp(ScanClock()));
-        var current = new Dictionary<string, VenueDay>(StringComparer.Ordinal);
+        var current = new Dictionary<string, AvailabilitySlot>(StringComparer.Ordinal);
         var newSlots = new List<AvailabilitySlot>();
         foreach (var slot in scan.Slots)
         {
             var line = slot.ToLogLine();
-            if (!current.TryAdd(line, VenueDay.Of(slot)))
+            if (!current.TryAdd(line, slot))
             {
                 continue;
             }
@@ -360,17 +363,56 @@ public partial class MainViewModel
         }
 
         var skipped = scan.Skipped.ToHashSet();
-        foreach (var (line, venueDay) in _previousScan)
+        foreach (var (line, slot) in _previousScan)
         {
-            if (skipped.Contains(venueDay))
+            if (current.ContainsKey(line))
             {
-                current.TryAdd(line, venueDay);
+                continue;
             }
+
+            if (skipped.Contains(VenueDay.Of(slot)))
+            {
+                current.TryAdd(line, slot);
+            }
+            else if (WasScannedAndStillAhead(slot, request))
+            {
+                Results.Add($"Booked: {line}");
+            }
+        }
+
+        foreach (var note in scan.SkipNotes)
+        {
+            Results.Add(note);
+            LogError(note);
         }
 
         _previousScan = current;
         Results.Add(string.Empty);
         return newSlots;
+    }
+
+    /// <summary>
+    /// True when this scan read the slot's location/day, the slot start is still in its window, and it has not
+    /// started yet — so a missing slot was taken, not dropped by a GUI change, midnight or the clock.
+    /// </summary>
+    /// <param name="slot">A record from the previous scan that this scan did not find.</param>
+    /// <param name="request">This scan's locations, days and windows.</param>
+    /// <returns>True when the slot can be reported as booked.</returns>
+    /// <example>
+    /// <code>
+    /// if (WasScannedAndStillAhead(slot, request)) Results.Add($"Booked: {slot.ToLogLine()}");
+    /// </code>
+    /// </example>
+    private bool WasScannedAndStillAhead(AvailabilitySlot slot, SearchRequest request)
+    {
+        if (!request.Locations.Any(v => string.Equals(v.Name, slot.LocationName, StringComparison.Ordinal))
+            || !SearchDatePlanner.Days(request.StartDate, request.DaysAhead).Contains(slot.Date))
+        {
+            return false;
+        }
+
+        var window = SearchDatePlanner.WindowFor(slot.Date, request.WeekdayWindow, request.WeekendWindow);
+        return SearchDatePlanner.IsInWindow(window, slot.From) && slot.Date.ToDateTime(slot.From) > ScanClock();
     }
 
     /// <summary>

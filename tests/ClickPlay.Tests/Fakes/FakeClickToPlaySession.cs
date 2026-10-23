@@ -85,7 +85,8 @@ public sealed class FakeClickToPlaySession : IClickToPlaySession
         progress?.Report("Checking locations…");
         var slots = AvailabilityForCall?.Invoke(SearchCallCount) ?? Availability;
         var skipped = SkippedForCall?.Invoke(SearchCallCount) ?? [];
-        return Task.FromResult(new AvailabilityScan(slots, skipped));
+        var notes = skipped.Select(v => $"Skipped {v.Venue}, {v.Day:dd.MM.yyyy}: site busy").ToList();
+        return Task.FromResult(new AvailabilityScan(slots, skipped, notes));
     }
 
     public Task CloseBrowserAsync(CancellationToken cancellationToken)

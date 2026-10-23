@@ -6,7 +6,7 @@
         mc:Ignorable="d" d:DesignWidth="960" d:DesignHeight="700"
         x:Class="ClickPlay.App.Views.MainWindow"
         x:DataType="vm:MainViewModel"
-        Icon="/Assets/avalonia-logo.ico"
+        Icon="/Assets/clickplay.ico"
         Title="ClickPlay"
         Width="960"
         Height="720"
