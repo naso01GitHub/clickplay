@@ -31,7 +31,7 @@ When Search is clicked  ( search loop):
      2. Click on selected Sport
      3. Click on selected City
      4. Get first available location from web.
-     5. Check if this location is selected in GUI. If Yes, collect every `.booking-slot` that has class `itsfree`.
+     5. Check if this location is selected in GUI. If Yes, collect every  free slot.
      6. Get next location and reseat step 5.
      7. Continue to all  available in web locations.
      8. On web calandar, select next day.
